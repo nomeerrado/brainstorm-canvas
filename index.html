@@ -72,19 +72,57 @@
       return { ...el, x: el.x+dx, y: el.y+dy };
     }
 
-    function BrainstormCanvas() {
-      const [elements, setElements]     = useState([]);
-      const [tool, setTool]             = useState('select');
-      const [color, setColor]           = useState('#64FFDA');
-      const [selectedId, setSelectedId] = useState(null);
-      const [editingId, setEditingId]   = useState(null);
-      const [ghost, setGhost]           = useState(null);
-      const [strokeW, setStrokeW]       = useState(2);
+    function getBBox(el) {
+      if (el.type === 'arrow') return {
+        x: Math.min(el.x1, el.x2), y: Math.min(el.y1, el.y2),
+        w: Math.abs(el.x2-el.x1)||1, h: Math.abs(el.y2-el.y1)||1,
+      };
+      if (el.type === 'freehand' && el.points?.length) {
+        const xs = el.points.map(([px]) => px), ys = el.points.map(([,py]) => py);
+        return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs)-Math.min(...xs)||1, h: Math.max(...ys)-Math.min(...ys)||1 };
+      }
+      if (el.type === 'text') return { x: el.x, y: el.y, w: el.w||240, h: 40 };
+      return { x: el.x||0, y: el.y||0, w: el.width||1, h: el.height||1 };
+    }
 
-      const svgRef  = useRef(null);
-      const dragRef = useRef(null);
-      const elsRef  = useRef(elements);
+    function overlaps(bb, r) {
+      return bb.x < r.x+r.w && bb.x+bb.w > r.x && bb.y < r.y+r.h && bb.y+bb.h > r.y;
+    }
+
+    function BrainstormCanvas() {
+      const [elements, setElements]       = useState([]);
+      const [tool, setTool]               = useState('select');
+      const [color, setColor]             = useState('#64FFDA');
+      const [selectedIds, setSelectedIds] = useState(new Set());
+      const [editingId, setEditingId]     = useState(null);
+      const [ghost, setGhost]             = useState(null);
+      const [selRect, setSelRect]         = useState(null);
+      const [strokeW, setStrokeW]         = useState(2);
+
+      const svgRef         = useRef(null);
+      const dragRef        = useRef(null);
+      const elsRef         = useRef(elements);
+      const selectedIdsRef = useRef(selectedIds);
+      const ghostRef       = useRef(null);
+      const selRectRef     = useRef(null);
+      const historyRef     = useRef([]);
+
       useEffect(() => { elsRef.current = elements; }, [elements]);
+      useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
+      useEffect(() => { ghostRef.current = ghost; }, [ghost]);
+
+      const pushHistory = useCallback(() => {
+        historyRef.current = [...historyRef.current.slice(-49), [...elsRef.current]];
+      }, []);
+
+      const undo = useCallback(() => {
+        if (historyRef.current.length === 0) return;
+        const prev = historyRef.current[historyRef.current.length - 1];
+        historyRef.current = historyRef.current.slice(0, -1);
+        setElements(prev);
+        setSelectedIds(new Set());
+        setEditingId(null);
+      }, []);
 
       /* ── Keyboard shortcuts ── */
       useEffect(() => {
@@ -92,16 +130,25 @@
         const onKey = (e) => {
           if (editingId) return;
           if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
-          if (keyMap[e.key]) { setTool(keyMap[e.key]); return; }
-          if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-            setElements(prev => prev.filter(el => el.id !== selectedId));
-            setSelectedId(null);
+
+          if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+            e.preventDefault();
+            undo();
+            return;
           }
-          if (e.key === 'Escape') { setSelectedId(null); setEditingId(null); }
+
+          if (keyMap[e.key] && !e.ctrlKey && !e.metaKey) { setTool(keyMap[e.key]); return; }
+
+          if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdsRef.current.size > 0) {
+            pushHistory();
+            setElements(prev => prev.filter(el => !selectedIdsRef.current.has(el.id)));
+            setSelectedIds(new Set());
+          }
+          if (e.key === 'Escape') { setSelectedIds(new Set()); setEditingId(null); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-      }, [editingId, selectedId]);
+      }, [editingId, undo, pushHistory]);
 
       /* ── Mouse down ── */
       const handleDown = useCallback((e) => {
@@ -112,22 +159,57 @@
         if (tool === 'select') {
           const target = e.target.closest('[data-elid]');
           if (target) {
-            const id   = target.dataset.elid;
-            const orig = els.find(el => el.id === id);
-            setSelectedId(id);
-            if (orig) dragRef.current = { type: 'move', origEl: { ...orig }, startX: pt.x, startY: pt.y };
+            const id = target.dataset.elid;
+
+            if (e.shiftKey) {
+              // Shift+click: toggle element in/out of selection
+              setSelectedIds(prev => {
+                const next = new Set(prev);
+                if (next.has(id)) next.delete(id); else next.add(id);
+                return next;
+              });
+              return;
+            }
+
+            // If clicking an already-selected element, keep full selection for group move
+            // Otherwise, single-select the clicked element
+            const curIds = selectedIdsRef.current;
+            const moveIds = curIds.has(id) ? new Set(curIds) : new Set([id]);
+            if (!curIds.has(id)) setSelectedIds(moveIds);
+
+            const origs = [...moveIds]
+              .map(sid => els.find(el => el.id === sid))
+              .filter(Boolean)
+              .map(el => ({ ...el }));
+
+            dragRef.current = {
+              type: 'move',
+              origs,
+              startX: pt.x, startY: pt.y,
+              snapshot: [...els],
+              moved: false,
+            };
           } else {
-            setSelectedId(null);
-            setEditingId(null);
+            // Clicked empty canvas
+            if (!e.shiftKey) {
+              setSelectedIds(new Set());
+              setEditingId(null);
+            }
+            // Start rubber-band selection rect
+            const sr = { x: pt.x, y: pt.y, w: 0, h: 0 };
+            setSelRect(sr);
+            selRectRef.current = sr;
+            dragRef.current = { type: 'sel-rect', startX: pt.x, startY: pt.y };
           }
           return;
         }
 
         if (tool === 'text') {
+          pushHistory();
           const id    = genId();
           const newEl = { id, type: 'text', x: pt.x - 4, y: pt.y - 14, w: 240, text: '', color };
           setElements(prev => [...prev, newEl]);
-          setSelectedId(id);
+          setSelectedIds(new Set([id]));
           setEditingId(id);
           return;
         }
@@ -139,7 +221,7 @@
           setGhost({ type: 'arrow', x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y, color, strokeW });
         else
           setGhost({ type: tool, x: pt.x, y: pt.y, width: 0, height: 0, color, strokeW });
-      }, [tool, color, strokeW]);
+      }, [tool, color, strokeW, pushHistory]);
 
       /* ── Mouse move ── */
       const handleMove = useCallback((e) => {
@@ -150,9 +232,22 @@
         if (d.type === 'move') {
           const dx = pt.x - d.startX;
           const dy = pt.y - d.startY;
-          setElements(prev => prev.map(el =>
-            el.id === d.origEl.id ? moveEl({ ...d.origEl }, dx, dy) : el
-          ));
+          if (!d.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) d.moved = true;
+          setElements(prev => prev.map(el => {
+            const orig = d.origs.find(o => o.id === el.id);
+            return orig ? moveEl({ ...orig }, dx, dy) : el;
+          }));
+          return;
+        }
+
+        if (d.type === 'sel-rect') {
+          const x = Math.min(pt.x, d.startX);
+          const y = Math.min(pt.y, d.startY);
+          const w = Math.abs(pt.x - d.startX);
+          const h = Math.abs(pt.y - d.startY);
+          const sr = { x, y, w, h };
+          setSelRect(sr);
+          selRectRef.current = sr;
           return;
         }
 
@@ -173,23 +268,48 @@
 
       /* ── Mouse up ── */
       const handleUp = useCallback(() => {
-        if (dragRef.current?.type === 'draw') {
-          setGhost(g => {
-            if (!g) return null;
+        const d = dragRef.current;
+
+        if (d?.type === 'move' && d.moved) {
+          // Push pre-move snapshot so Ctrl+Z restores positions
+          historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
+        }
+
+        if (d?.type === 'sel-rect') {
+          const r = selRectRef.current;
+          if (r && r.w > 5 && r.h > 5) {
+            const ids = new Set(
+              elsRef.current
+                .filter(el => overlaps(getBBox(el), r))
+                .map(el => el.id)
+            );
+            if (ids.size > 0) setSelectedIds(ids);
+          }
+          setSelRect(null);
+          selRectRef.current = null;
+          dragRef.current = null;
+          return;
+        }
+
+        if (d?.type === 'draw') {
+          const g = ghostRef.current;
+          setGhost(null);
+          if (g) {
             const ok =
               (g.type === 'freehand' && g.points.length > 3) ||
               (g.type === 'arrow'    && (Math.abs(g.x2-g.x1) > 10 || Math.abs(g.y2-g.y1) > 10)) ||
               (g.width > 8 && g.height > 8);
             if (ok) {
+              pushHistory();
               const id = genId();
               setElements(prev => [...prev, { ...g, id }]);
-              setSelectedId(id);
+              setSelectedIds(new Set([id]));
             }
-            return null;
-          });
+          }
         }
+
         dragRef.current = null;
-      }, []);
+      }, [pushHistory]);
 
       /* ── Export JSON ── */
       const exportJSON = () => {
@@ -255,8 +375,8 @@
 
       /* ── Render element ── */
       const renderEl = (el) => {
-        const sel     = selectedId === el.id;
-        const editing = editingId  === el.id;
+        const sel     = selectedIds.has(el.id);
+        const editing = editingId === el.id;
         const sw      = el.strokeW || 2;
         const cursor  = tool === 'select' ? 'move' : 'crosshair';
 
@@ -376,9 +496,13 @@
           const d = el.points.length < 2 ? '' :
             el.points.reduce((acc, [px,py], i) => i === 0 ? `M${px},${py}` : `${acc}L${px},${py}`, '');
           return (
-            <path key={el.id} data-elid={el.id} style={{ cursor }}
-              d={d} fill="none" stroke={el.color} strokeWidth={sw}
-              strokeLinecap="round" strokeLinejoin="round" />
+            <g key={el.id} data-elid={el.id} style={{ cursor }}>
+              <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
+              <path d={d} fill="none" stroke={el.color} strokeWidth={sw}
+                strokeLinecap="round" strokeLinejoin="round" />
+              {sel && <path d={d} fill="none" stroke="#64FFDA" strokeWidth={1}
+                strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />}
+            </g>
           );
         }
         return null;
@@ -406,8 +530,9 @@
         return null;
       };
 
-      const selEl    = elements.find(e => e.id === selectedId);
-      const cursorMap = { select: 'default', text: 'text', rect: 'crosshair',
+      const selEl      = selectedIds.size === 1 ? elements.find(e => selectedIds.has(e.id)) : null;
+      const hasSelection = selectedIds.size > 0;
+      const cursorMap  = { select: 'default', text: 'text', rect: 'crosshair',
         circle: 'crosshair', arrow: 'crosshair', freehand: 'crosshair', group: 'crosshair' };
 
       /* ── JSX ── */
@@ -471,9 +596,9 @@
                 <button key={p.color} title={p.name}
                   onClick={() => {
                     setColor(p.color);
-                    if (selectedId && selEl)
+                    if (hasSelection)
                       setElements(prev => prev.map(el =>
-                        el.id === selectedId ? { ...el, color: p.color } : el
+                        selectedIds.has(el.id) ? { ...el, color: p.color } : el
                       ));
                   }}
                   style={{
@@ -512,22 +637,48 @@
 
             {/* Actions */}
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              {selectedId && (
+
+              {/* Undo */}
+              <button
+                onClick={undo}
+                title="Desfazer  [Ctrl+Z]"
+                disabled={historyRef.current.length === 0}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid #1E2D3D',
+                  borderRadius: 7,
+                  color: '#4A6A7A',
+                  cursor: 'pointer',
+                  fontSize: 13, padding: '4px 10px', fontFamily: 'inherit',
+                  opacity: historyRef.current.length === 0 ? 0.35 : 1,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D'; e.currentTarget.style.color='#4A6A7A'; }}
+              >↩</button>
+
+              {hasSelection && (
                 <button
-                  onClick={() => { setElements(prev => prev.filter(e => e.id !== selectedId)); setSelectedId(null); }}
+                  onClick={() => {
+                    pushHistory();
+                    setElements(prev => prev.filter(e => !selectedIds.has(e.id)));
+                    setSelectedIds(new Set());
+                  }}
                   style={{
                     background: '#FF6B6B15', border: '1px solid #FF6B6B30',
                     borderRadius: 7, color: '#FF6B6B', cursor: 'pointer',
                     fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
                   }}
-                >✕ deletar</button>
+                >
+                  ✕ {selectedIds.size > 1 ? `deletar (${selectedIds.size})` : 'deletar'}
+                </button>
               )}
 
               <button
                 onClick={() => {
                   if (elements.length === 0) return;
                   if (window.confirm('Limpar todo o canvas? Essa ação não pode ser desfeita.')) {
-                    setElements([]); setSelectedId(null); setEditingId(null);
+                    pushHistory();
+                    setElements([]); setSelectedIds(new Set()); setEditingId(null);
                   }
                 }}
                 style={{
@@ -580,6 +731,13 @@
             {elements.filter(e => e.type === 'group').map(renderEl)}
             {elements.filter(e => e.type !== 'group').map(renderEl)}
             {renderGhost()}
+            {/* Rubber-band selection rect */}
+            {selRect && selRect.w > 0 && selRect.h > 0 && (
+              <rect
+                x={selRect.x} y={selRect.y} width={selRect.w} height={selRect.h}
+                fill="#64FFDA08" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3"
+              />
+            )}
           </svg>
 
           {/* STATUS BAR */}
@@ -598,12 +756,15 @@
                 arrow:    ' — arraste para criar uma seta',
                 freehand: ' — segure e arraste para desenhar',
                 group:    ' — arraste para criar um grupo',
-                select:   selEl
+                select: selectedIds.size > 1
+                  ? ` — ${selectedIds.size} elementos selecionados · arraste para mover · DEL para deletar`
+                  : selEl
                   ? ` — ${selEl.type} selecionado · duplo clique para editar texto · DEL para deletar`
-                  : ' — clique para selecionar, arraste para mover',
+                  : ' — clique para selecionar · shift+clique ou arraste para multi-selecionar · Ctrl+Z desfaz',
               })[tool]}
             </span>
             <span style={{ color: '#2A4050', fontSize: 10, marginLeft: 'auto', letterSpacing: 0.5 }}>
+              {hasSelection ? `${selectedIds.size} selecionado${selectedIds.size !== 1 ? 's' : ''} · ` : ''}
               {elements.length} elemento{elements.length !== 1 ? 's' : ''}
             </span>
           </div>
