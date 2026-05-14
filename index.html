@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brainstorm · Pixelize Indie</title>
+  <meta name="description" content="Canvas de brainstorm e diagramação — Pixelize Indie" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #root { width: 100%; height: 100%; overflow: hidden; background: #0A0F1A; }
+    #loading {
+      position: fixed; inset: 0; background: #0A0F1A;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; z-index: 9999;
+    }
+    #loading svg { animation: spin 1.2s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading p { color: #64FFDA; font-family: monospace; font-size: 12px; letter-spacing: 3px; opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+      <circle cx="14" cy="14" r="11" stroke="#1E2D3D" stroke-width="2.5"/>
+      <path d="M14 3 A11 11 0 0 1 25 14" stroke="#64FFDA" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+    <p>CARREGANDO</p>
+  </div>
+
+  <div id="root"></div>
+
+  <!-- React 18 + Babel standalone (JSX sem build) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useRef, useCallback, useEffect } = React;
+
+    const PALETTE = [
+      { color: '#64FFDA', name: 'Cyan'   },
+      { color: '#FFFFFF', name: 'White'  },
+      { color: '#FF6B6B', name: 'Red'    },
+      { color: '#FFD93D', name: 'Yellow' },
+      { color: '#74B9FF', name: 'Blue'   },
+      { color: '#FF9F43', name: 'Orange' },
+      { color: '#A29BFE', name: 'Purple' },
+      { color: '#55EFC4', name: 'Mint'   },
+    ];
+
+    const TOOLS = [
+      { id: 'select',   glyph: '↖', key: 'v', label: 'Selecionar' },
+      { id: 'text',     glyph: 'T',  key: 't', label: 'Texto'      },
+      { id: 'rect',     glyph: '▭', key: 'r', label: 'Retângulo'  },
+      { id: 'circle',   glyph: '◯', key: 'e', label: 'Elipse'     },
+      { id: 'arrow',    glyph: '↗', key: 'a', label: 'Seta'       },
+      { id: 'freehand', glyph: '✏', key: 'f', label: 'Livre'      },
+      { id: 'group',    glyph: '⊡', key: 'g', label: 'Grupo'      },
+    ];
+
+    let _id = 1;
+    const genId = () => `el_${_id++}_${Date.now()}`;
+
+    function getpt(svg, e) {
+      const r = svg.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+
+    function moveEl(el, dx, dy) {
+      if (el.type === 'arrow')    return { ...el, x1: el.x1+dx, y1: el.y1+dy, x2: el.x2+dx, y2: el.y2+dy };
+      if (el.type === 'freehand') return { ...el, points: el.points.map(([px,py]) => [px+dx, py+dy]) };
+      return { ...el, x: el.x+dx, y: el.y+dy };
+    }
+
+    function BrainstormCanvas() {
+      const [elements, setElements]     = useState([]);
+      const [tool, setTool]             = useState('select');
+      const [color, setColor]           = useState('#64FFDA');
+      const [selectedId, setSelectedId] = useState(null);
+      const [editingId, setEditingId]   = useState(null);
+      const [ghost, setGhost]           = useState(null);
+      const [strokeW, setStrokeW]       = useState(2);
+
+      const svgRef  = useRef(null);
+      const dragRef = useRef(null);
+      const elsRef  = useRef(elements);
+      useEffect(() => { elsRef.current = elements; }, [elements]);
+
+      /* ── Keyboard shortcuts ── */
+      useEffect(() => {
+        const keyMap = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
+        const onKey = (e) => {
+          if (editingId) return;
+          if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
+          if (keyMap[e.key]) { setTool(keyMap[e.key]); return; }
+          if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+            setElements(prev => prev.filter(el => el.id !== selectedId));
+            setSelectedId(null);
+          }
+          if (e.key === 'Escape') { setSelectedId(null); setEditingId(null); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [editingId, selectedId]);
+
+      /* ── Mouse down ── */
+      const handleDown = useCallback((e) => {
+        if (e.button !== 0) return;
+        const pt  = getpt(svgRef.current, e);
+        const els = elsRef.current;
+
+        if (tool === 'select') {
+          const target = e.target.closest('[data-elid]');
+          if (target) {
+            const id   = target.dataset.elid;
+            const orig = els.find(el => el.id === id);
+            setSelectedId(id);
+            if (orig) dragRef.current = { type: 'move', origEl: { ...orig }, startX: pt.x, startY: pt.y };
+          } else {
+            setSelectedId(null);
+            setEditingId(null);
+          }
+          return;
+        }
+
+        if (tool === 'text') {
+          const id    = genId();
+          const newEl = { id, type: 'text', x: pt.x - 4, y: pt.y - 14, w: 240, text: '', color };
+          setElements(prev => [...prev, newEl]);
+          setSelectedId(id);
+          setEditingId(id);
+          return;
+        }
+
+        dragRef.current = { type: 'draw', tool, startX: pt.x, startY: pt.y };
+        if (tool === 'freehand')
+          setGhost({ type: 'freehand', points: [[pt.x, pt.y]], color, strokeW });
+        else if (tool === 'arrow')
+          setGhost({ type: 'arrow', x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y, color, strokeW });
+        else
+          setGhost({ type: tool, x: pt.x, y: pt.y, width: 0, height: 0, color, strokeW });
+      }, [tool, color, strokeW]);
+
+      /* ── Mouse move ── */
+      const handleMove = useCallback((e) => {
+        if (!dragRef.current) return;
+        const pt = getpt(svgRef.current, e);
+        const d  = dragRef.current;
+
+        if (d.type === 'move') {
+          const dx = pt.x - d.startX;
+          const dy = pt.y - d.startY;
+          setElements(prev => prev.map(el =>
+            el.id === d.origEl.id ? moveEl({ ...d.origEl }, dx, dy) : el
+          ));
+          return;
+        }
+
+        if (d.type === 'draw') {
+          if (d.tool === 'freehand') {
+            setGhost(prev => prev ? { ...prev, points: [...prev.points, [pt.x, pt.y]] } : null);
+          } else if (d.tool === 'arrow') {
+            setGhost(prev => prev ? { ...prev, x2: pt.x, y2: pt.y } : null);
+          } else {
+            const x = Math.min(pt.x, d.startX);
+            const y = Math.min(pt.y, d.startY);
+            const w = Math.abs(pt.x - d.startX);
+            const h = Math.abs(pt.y - d.startY);
+            setGhost(prev => prev ? { ...prev, x, y, width: w, height: h } : null);
+          }
+        }
+      }, []);
+
+      /* ── Mouse up ── */
+      const handleUp = useCallback(() => {
+        if (dragRef.current?.type === 'draw') {
+          setGhost(g => {
+            if (!g) return null;
+            const ok =
+              (g.type === 'freehand' && g.points.length > 3) ||
+              (g.type === 'arrow'    && (Math.abs(g.x2-g.x1) > 10 || Math.abs(g.y2-g.y1) > 10)) ||
+              (g.width > 8 && g.height > 8);
+            if (ok) {
+              const id = genId();
+              setElements(prev => [...prev, { ...g, id }]);
+              setSelectedId(id);
+            }
+            return null;
+          });
+        }
+        dragRef.current = null;
+      }, []);
+
+      /* ── Export JSON ── */
+      const exportJSON = () => {
+        const data = JSON.stringify({ version: 1, elements: elsRef.current }, null, 2);
+        const blob = new Blob([data], { type: 'application/json' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = 'brainstorm.json'; a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      /* ── Export PNG ── */
+      const exportPNG = () => {
+        const svgEl = svgRef.current;
+        const { width, height } = svgEl.getBoundingClientRect();
+        const clone = svgEl.cloneNode(true);
+        clone.setAttribute('width', width);
+        clone.setAttribute('height', height);
+
+        clone.querySelectorAll('foreignObject[data-elid]').forEach(fo => {
+          const id  = fo.getAttribute('data-elid');
+          const el  = elsRef.current.find(e => e.id === id);
+          const x   = parseFloat(fo.getAttribute('x') || 0);
+          const y   = parseFloat(fo.getAttribute('y') || 0);
+          const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          txt.setAttribute('x', x + 6);
+          txt.setAttribute('y', y + 18);
+          txt.setAttribute('fill', el?.color || '#fff');
+          txt.setAttribute('font-family', 'monospace');
+          txt.setAttribute('font-size', '14');
+          (el?.text || '').split('\n').forEach((line, i) => {
+            const ts = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+            ts.setAttribute('x', x + 6);
+            if (i > 0) ts.setAttribute('dy', '18');
+            ts.textContent = line;
+            txt.appendChild(ts);
+          });
+          fo.parentNode.replaceChild(txt, fo);
+        });
+
+        const svgStr = new XMLSerializer().serializeToString(clone);
+        const blob   = new Blob([svgStr], { type: 'image/svg+xml' });
+        const url    = URL.createObjectURL(blob);
+        const img    = new Image();
+        img.onload = () => {
+          const c   = document.createElement('canvas');
+          c.width   = width;
+          c.height  = height;
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#0A0F1A';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0);
+          c.toBlob(b => {
+            const u2 = URL.createObjectURL(b);
+            const a  = document.createElement('a');
+            a.href = u2; a.download = 'brainstorm.png'; a.click();
+            URL.revokeObjectURL(u2);
+          });
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      };
+
+      /* ── Render element ── */
+      const renderEl = (el) => {
+        const sel     = selectedId === el.id;
+        const editing = editingId  === el.id;
+        const sw      = el.strokeW || 2;
+        const cursor  = tool === 'select' ? 'move' : 'crosshair';
+
+        if (el.type === 'text') {
+          const border = sel ? '1px dashed #64FFDA' : '1px solid transparent';
+          return (
+            <foreignObject
+              key={el.id}
+              data-elid={el.id}
+              x={el.x} y={el.y}
+              width={el.w || 240}
+              height={200}
+              style={{ overflow: 'visible', cursor: tool === 'select' ? 'move' : 'default' }}
+              onDoubleClick={(e) => { e.stopPropagation(); if (tool === 'select') setEditingId(el.id); }}
+            >
+              <div xmlns="http://www.w3.org/1999/xhtml" style={{ display: 'inline-block', minWidth: 80 }}>
+                {editing ? (
+                  <textarea
+                    autoFocus
+                    value={el.text}
+                    onChange={ev => setElements(prev =>
+                      prev.map(e2 => e2.id === el.id ? { ...e2, text: ev.target.value } : e2)
+                    )}
+                    onBlur={() => setEditingId(null)}
+                    style={{
+                      background: 'rgba(10,15,26,0.92)',
+                      border: `1px solid ${el.color || '#64FFDA'}`,
+                      borderRadius: 6,
+                      color: el.color || '#fff',
+                      fontFamily: 'monospace',
+                      fontSize: 14,
+                      lineHeight: 1.6,
+                      padding: '6px 10px',
+                      minWidth: 160,
+                      minHeight: 40,
+                      resize: 'both',
+                      outline: 'none',
+                      boxShadow: `0 0 12px ${el.color || '#64FFDA'}33`,
+                    }}
+                  />
+                ) : (
+                  <div style={{
+                    color: el.color || '#fff',
+                    fontFamily: 'monospace',
+                    fontSize: 14,
+                    lineHeight: 1.6,
+                    padding: '6px 10px',
+                    minWidth: 80,
+                    minHeight: 28,
+                    whiteSpace: 'pre-wrap',
+                    border,
+                    borderRadius: 6,
+                    cursor: tool === 'select' ? 'move' : 'default',
+                    userSelect: 'none',
+                  }}>
+                    {el.text || <span style={{ opacity: 0.25, fontStyle: 'italic', fontSize: 12 }}>duplo clique...</span>}
+                  </div>
+                )}
+              </div>
+            </foreignObject>
+          );
+        }
+
+        if (el.type === 'rect') return (
+          <g key={el.id} data-elid={el.id} style={{ cursor }}>
+            <rect x={el.x} y={el.y} width={el.width} height={el.height}
+              fill="none" stroke={el.color} strokeWidth={sw} rx={4} />
+            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6}
+              fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={7} />}
+          </g>
+        );
+
+        if (el.type === 'group') return (
+          <g key={el.id} data-elid={el.id} style={{ cursor }}>
+            <rect x={el.x} y={el.y} width={el.width} height={el.height}
+              fill={`${el.color}08`} stroke={el.color} strokeWidth={1.5}
+              strokeDasharray="10 5" rx={10} />
+            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6}
+              fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={12} />}
+          </g>
+        );
+
+        if (el.type === 'circle') {
+          const cx = el.x + el.width/2, cy = el.y + el.height/2;
+          return (
+            <g key={el.id} data-elid={el.id} style={{ cursor }}>
+              <ellipse cx={cx} cy={cy} rx={el.width/2} ry={el.height/2}
+                fill="none" stroke={el.color} strokeWidth={sw} />
+              {sel && <ellipse cx={cx} cy={cy} rx={el.width/2+4} ry={el.height/2+4}
+                fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" />}
+            </g>
+          );
+        }
+
+        if (el.type === 'arrow') {
+          const mid = `arrowm_${el.id}`;
+          return (
+            <g key={el.id} data-elid={el.id} style={{ cursor }}>
+              <defs>
+                <marker id={mid} markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+                  <polygon points="0 0, 9 3.5, 0 7" fill={el.color} />
+                </marker>
+              </defs>
+              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
+                stroke="transparent" strokeWidth={14} />
+              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
+                stroke={el.color} strokeWidth={sw} markerEnd={`url(#${mid})`} />
+              {sel && <>
+                <circle cx={el.x1} cy={el.y1} r={5} fill="#64FFDA" opacity={0.5} />
+                <circle cx={el.x2} cy={el.y2} r={5} fill="#64FFDA" opacity={0.5} />
+              </>}
+            </g>
+          );
+        }
+
+        if (el.type === 'freehand') {
+          const d = el.points.length < 2 ? '' :
+            el.points.reduce((acc, [px,py], i) => i === 0 ? `M${px},${py}` : `${acc}L${px},${py}`, '');
+          return (
+            <path key={el.id} data-elid={el.id} style={{ cursor }}
+              d={d} fill="none" stroke={el.color} strokeWidth={sw}
+              strokeLinecap="round" strokeLinejoin="round" />
+          );
+        }
+        return null;
+      };
+
+      /* ── Render ghost ── */
+      const renderGhost = () => {
+        if (!ghost) return null;
+        const s = { fill: 'none', stroke: ghost.color, strokeWidth: ghost.strokeW || 2,
+                    strokeDasharray: '5 3', opacity: 0.75 };
+        if (ghost.type === 'rect')
+          return <rect {...s} x={ghost.x} y={ghost.y} width={ghost.width} height={ghost.height} rx={4} />;
+        if (ghost.type === 'group')
+          return <rect {...s} x={ghost.x} y={ghost.y} width={ghost.width} height={ghost.height}
+            rx={10} fill={`${ghost.color}06`} />;
+        if (ghost.type === 'circle')
+          return <ellipse {...s} cx={ghost.x+ghost.width/2} cy={ghost.y+ghost.height/2}
+            rx={ghost.width/2} ry={ghost.height/2} />;
+        if (ghost.type === 'arrow')
+          return <line {...s} strokeDasharray="none" x1={ghost.x1} y1={ghost.y1} x2={ghost.x2} y2={ghost.y2} />;
+        if (ghost.type === 'freehand') {
+          const d = ghost.points.reduce((acc, [px,py], i) => i === 0 ? `M${px},${py}` : `${acc}L${px},${py}`, '');
+          return <path {...s} strokeDasharray="none" d={d} strokeLinecap="round" strokeLinejoin="round" />;
+        }
+        return null;
+      };
+
+      const selEl    = elements.find(e => e.id === selectedId);
+      const cursorMap = { select: 'default', text: 'text', rect: 'crosshair',
+        circle: 'crosshair', arrow: 'crosshair', freehand: 'crosshair', group: 'crosshair' };
+
+      /* ── JSX ── */
+      return (
+        <div style={{
+          width: '100%', height: '100vh',
+          background: '#0A0F1A',
+          display: 'flex', flexDirection: 'column',
+          fontFamily: '"Segoe UI", system-ui, sans-serif',
+          userSelect: 'none', touchAction: 'none',
+        }}>
+
+          {/* TOP BAR */}
+          <div style={{
+            height: 52, background: '#0F172A',
+            borderBottom: '1px solid #1E2D3D',
+            display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 14px', flexShrink: 0, gap: 10,
+          }}>
+
+            {/* Brand */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              <svg width="20" height="20" viewBox="0 0 200 200">
+                <rect x="50" y="50" width="100" height="100" fill="none" stroke="#64FFDA" strokeWidth="12"/>
+                <line x1="75" y1="90" x2="90" y2="90" stroke="white" strokeWidth="12" strokeLinecap="round"/>
+                <line x1="110" y1="90" x2="125" y2="90" stroke="white" strokeWidth="12" strokeLinecap="round"/>
+                <path d="M 75 118 Q 100 130 125 118" fill="none" stroke="#64FFDA" strokeWidth="10" strokeLinecap="round"/>
+              </svg>
+              <span style={{ color: '#64FFDA', fontSize: 10, fontWeight: 700, letterSpacing: 3 }}>BRAINSTORM</span>
+            </div>
+
+            <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
+
+            {/* Tools */}
+            <div style={{ display: 'flex', gap: 2 }}>
+              {TOOLS.map(t => (
+                <button key={t.id} onClick={() => setTool(t.id)}
+                  title={`${t.label}  [${t.key.toUpperCase()}]`}
+                  style={{
+                    background: tool === t.id ? '#64FFDA18' : 'transparent',
+                    border: `1px solid ${tool === t.id ? '#64FFDA44' : 'transparent'}`,
+                    borderRadius: 7, cursor: 'pointer',
+                    color: tool === t.id ? '#64FFDA' : '#4A6A7A',
+                    fontSize: t.id === 'text' ? 12 : 14,
+                    fontFamily: 'inherit',
+                    fontWeight: t.id === 'text' ? 800 : 400,
+                    width: 30, height: 30,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.12s',
+                  }}
+                >{t.glyph}</button>
+              ))}
+            </div>
+
+            <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
+
+            {/* Palette */}
+            <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+              {PALETTE.map(p => (
+                <button key={p.color} title={p.name}
+                  onClick={() => {
+                    setColor(p.color);
+                    if (selectedId && selEl)
+                      setElements(prev => prev.map(el =>
+                        el.id === selectedId ? { ...el, color: p.color } : el
+                      ));
+                  }}
+                  style={{
+                    width: 15, height: 15, borderRadius: '50%',
+                    background: p.color,
+                    border: `2px solid ${color === p.color ? p.color : 'transparent'}`,
+                    outline: color === p.color ? '2px solid rgba(255,255,255,0.25)' : 'none',
+                    cursor: 'pointer', padding: 0, flexShrink: 0,
+                    transform: color === p.color ? 'scale(1.3)' : 'scale(1)',
+                    transition: 'transform 0.12s',
+                  }}
+                />
+              ))}
+            </div>
+
+            <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
+
+            {/* Stroke */}
+            <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+              {[1, 2, 3, 5].map(w => (
+                <button key={w} title={`${w}px`} onClick={() => setStrokeW(w)}
+                  style={{
+                    width: 26, height: 26,
+                    background: strokeW === w ? '#64FFDA18' : 'transparent',
+                    border: `1px solid ${strokeW === w ? '#64FFDA44' : 'transparent'}`,
+                    borderRadius: 5, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  <div style={{ width: 12, height: w, background: strokeW === w ? '#64FFDA' : '#4A6A7A', borderRadius: 1 }} />
+                </button>
+              ))}
+            </div>
+
+            <div style={{ flex: 1 }} />
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {selectedId && (
+                <button
+                  onClick={() => { setElements(prev => prev.filter(e => e.id !== selectedId)); setSelectedId(null); }}
+                  style={{
+                    background: '#FF6B6B15', border: '1px solid #FF6B6B30',
+                    borderRadius: 7, color: '#FF6B6B', cursor: 'pointer',
+                    fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
+                  }}
+                >✕ deletar</button>
+              )}
+
+              <button
+                onClick={() => {
+                  if (elements.length === 0) return;
+                  if (window.confirm('Limpar todo o canvas? Essa ação não pode ser desfeita.')) {
+                    setElements([]); setSelectedId(null); setEditingId(null);
+                  }
+                }}
+                style={{
+                  background: 'transparent',
+                  border: `1px solid ${elements.length === 0 ? '#1A2535' : '#1E2D3D'}`,
+                  borderRadius: 7,
+                  color: elements.length === 0 ? '#263545' : '#4A6A7A',
+                  cursor: elements.length === 0 ? 'default' : 'pointer',
+                  fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
+                }}
+                onMouseEnter={e => { if (elements.length > 0) { e.currentTarget.style.borderColor='#FF6B6B44'; e.currentTarget.style.color='#FF6B6B'; }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D'; e.currentTarget.style.color=elements.length===0?'#263545':'#4A6A7A'; }}
+              >⌫ limpar</button>
+
+              <button onClick={exportJSON}
+                style={{
+                  background: 'transparent', border: '1px solid #1E2D3D',
+                  borderRadius: 7, color: '#4A6A7A', cursor: 'pointer',
+                  fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D'; e.currentTarget.style.color='#4A6A7A'; }}
+              >↓ JSON</button>
+
+              <button onClick={exportPNG}
+                style={{
+                  background: '#64FFDA', border: 'none',
+                  borderRadius: 7, color: '#0A0F1A', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 700, padding: '4px 12px', fontFamily: 'inherit',
+                }}
+              >↓ PNG</button>
+            </div>
+          </div>
+
+          {/* CANVAS SVG */}
+          <svg
+            ref={svgRef}
+            style={{ flex: 1, display: 'block', cursor: cursorMap[tool] || 'default' }}
+            onMouseDown={handleDown}
+            onMouseMove={handleMove}
+            onMouseUp={handleUp}
+            onMouseLeave={handleUp}
+          >
+            <defs>
+              <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+                <circle cx="14" cy="14" r="0.8" fill="#162030" />
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#dots)" />
+            {elements.filter(e => e.type === 'group').map(renderEl)}
+            {elements.filter(e => e.type !== 'group').map(renderEl)}
+            {renderGhost()}
+          </svg>
+
+          {/* STATUS BAR */}
+          <div style={{
+            height: 24, background: '#0A0F1A',
+            borderTop: '1px solid #1A2535',
+            display: 'flex', alignItems: 'center',
+            padding: '0 14px', flexShrink: 0, gap: 16,
+          }}>
+            <span style={{ color: '#2A4050', fontSize: 10, letterSpacing: 0.5 }}>
+              {TOOLS.find(t => t.id === tool)?.label?.toUpperCase()}
+              {({
+                text:     ' — clique no canvas para inserir texto',
+                rect:     ' — arraste para desenhar o retângulo',
+                circle:   ' — arraste para desenhar a elipse',
+                arrow:    ' — arraste para criar uma seta',
+                freehand: ' — segure e arraste para desenhar',
+                group:    ' — arraste para criar um grupo',
+                select:   selEl
+                  ? ` — ${selEl.type} selecionado · duplo clique para editar texto · DEL para deletar`
+                  : ' — clique para selecionar, arraste para mover',
+              })[tool]}
+            </span>
+            <span style={{ color: '#2A4050', fontSize: 10, marginLeft: 'auto', letterSpacing: 0.5 }}>
+              {elements.length} elemento{elements.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    // Remove loading screen and mount app
+    document.getElementById('loading').style.display = 'none';
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<BrainstormCanvas />);
+  </script>
+</body>
+</html>
