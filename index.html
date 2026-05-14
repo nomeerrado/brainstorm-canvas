@@ -29,7 +29,6 @@
 
   <div id="root"></div>
 
-  <!-- React 18 + Babel standalone (JSX sem build) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
@@ -49,21 +48,41 @@
     ];
 
     const TOOLS = [
-      { id: 'select',   glyph: '↖', key: 'v', label: 'Selecionar' },
-      { id: 'text',     glyph: 'T',  key: 't', label: 'Texto'      },
-      { id: 'rect',     glyph: '▭', key: 'r', label: 'Retângulo'  },
-      { id: 'circle',   glyph: '◯', key: 'e', label: 'Elipse'     },
-      { id: 'arrow',    glyph: '↗', key: 'a', label: 'Seta'       },
-      { id: 'freehand', glyph: '✏', key: 'f', label: 'Livre'      },
-      { id: 'group',    glyph: '⊡', key: 'g', label: 'Grupo'      },
+      { id: 'select',   key: 'v', label: 'Selecionar' },
+      { id: 'text',     glyph: 'T',  key: 't', label: 'Texto'     },
+      { id: 'rect',     glyph: '▭', key: 'r', label: 'Retângulo' },
+      { id: 'circle',   glyph: '◯', key: 'e', label: 'Elipse'    },
+      { id: 'arrow',    glyph: '↗', key: 'a', label: 'Seta'      },
+      { id: 'freehand', glyph: '✏', key: 'f', label: 'Livre'     },
+      { id: 'group',    glyph: '⊡', key: 'g', label: 'Grupo'     },
+    ];
+
+    const SHORTCUTS = [
+      { key: 'V', desc: 'Selecionar' },
+      { key: 'T', desc: 'Texto' },
+      { key: 'R', desc: 'Retângulo' },
+      { key: 'E', desc: 'Elipse' },
+      { key: 'A', desc: 'Seta' },
+      { key: 'F', desc: 'Livre' },
+      { key: 'G', desc: 'Grupo' },
+      { key: 'Ctrl+Z', desc: 'Desfazer' },
+      { key: 'Del', desc: 'Deletar seleção' },
+      { key: 'Esc', desc: 'Desselecionar' },
+      { key: 'Home', desc: 'Centralizar canvas' },
+      { key: 'Espaço+drag', desc: 'Navegar canvas' },
+      { key: 'Botão do meio', desc: 'Navegar canvas' },
+      { key: 'Scroll', desc: 'Zoom in/out' },
+      { key: 'Ctrl++/-', desc: 'Zoom in/out' },
+      { key: 'Ctrl+0', desc: 'Resetar zoom' },
+      { key: 'Mapa', desc: 'Clique/arraste para navegar' },
     ];
 
     let _id = 1;
     const genId = () => `el_${_id++}_${Date.now()}`;
 
-    function getpt(svg, e) {
+    function getpt(svg, e, panX, panY, zoom = 1) {
       const r = svg.getBoundingClientRect();
-      return { x: e.clientX - r.left, y: e.clientY - r.top };
+      return { x: (e.clientX - r.left - panX) / zoom, y: (e.clientY - r.top - panY) / zoom };
     }
 
     function moveEl(el, dx, dy) {
@@ -90,26 +109,43 @@
     }
 
     function BrainstormCanvas() {
-      const [elements, setElements]       = useState([]);
-      const [tool, setTool]               = useState('select');
-      const [color, setColor]             = useState('#64FFDA');
-      const [selectedIds, setSelectedIds] = useState(new Set());
-      const [editingId, setEditingId]     = useState(null);
-      const [ghost, setGhost]             = useState(null);
-      const [selRect, setSelRect]         = useState(null);
-      const [strokeW, setStrokeW]         = useState(2);
+      const [elements, setElements]           = useState([]);
+      const [tool, setTool]                   = useState('select');
+      const [color, setColor]                 = useState('#64FFDA');
+      const [selectedIds, setSelectedIds]     = useState(new Set());
+      const [editingId, setEditingId]         = useState(null);
+      const [ghost, setGhost]                 = useState(null);
+      const [selRect, setSelRect]             = useState(null);
+      const [strokeW, setStrokeW]             = useState(2);
+      const [pan, setPan]                     = useState({ x: 0, y: 0 });
+      const [spaceDown, setSpaceDown]         = useState(false);
+      const [isPanning, setIsPanning]         = useState(false);
+      const [showMinimap, setShowMinimap]     = useState(true);
+      const [showShortcuts, setShowShortcuts] = useState(false);
+      const [zoom, setZoom]                   = useState(1);
 
-      const svgRef         = useRef(null);
-      const dragRef        = useRef(null);
-      const elsRef         = useRef(elements);
-      const selectedIdsRef = useRef(selectedIds);
-      const ghostRef       = useRef(null);
-      const selRectRef     = useRef(null);
-      const historyRef     = useRef([]);
+      const svgRef          = useRef(null);
+      const dragRef         = useRef(null);
+      const elsRef          = useRef(elements);
+      const selectedIdsRef  = useRef(selectedIds);
+      const ghostRef        = useRef(null);
+      const selRectRef      = useRef(null);
+      const historyRef      = useRef([]);
+      const panRef          = useRef({ x: 0, y: 0 });
+      const zoomRef         = useRef(1);
+      const spacePressedRef = useRef(false);
+      const minimapDragRef  = useRef(null);
 
       useEffect(() => { elsRef.current = elements; }, [elements]);
       useEffect(() => { selectedIdsRef.current = selectedIds; }, [selectedIds]);
       useEffect(() => { ghostRef.current = ghost; }, [ghost]);
+      useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+
+      const resetPan = useCallback(() => {
+        const z = { x: 0, y: 0 };
+        setPan(z);
+        panRef.current = z;
+      }, []);
 
       const pushHistory = useCallback(() => {
         historyRef.current = [...historyRef.current.slice(-49), [...elsRef.current]];
@@ -124,19 +160,107 @@
         setEditingId(null);
       }, []);
 
+      /* ── Minimap click-to-pan helper ── */
+      const applyMinimapPoint = useCallback((clientX, clientY, rect) => {
+        const MW = 180, MH = 112, SCALE = 0.06;
+        const cx = MW / 2, cy = MH / 2;
+        const mx = Math.max(0, Math.min(MW, clientX - rect.left));
+        const my = Math.max(0, Math.min(MH, clientY - rect.top));
+        const canvasX = (mx - cx) / SCALE;
+        const canvasY = (my - cy) / SCALE;
+        const svgEl = svgRef.current;
+        const svgW = svgEl ? svgEl.clientWidth : window.innerWidth;
+        const svgH = svgEl ? svgEl.clientHeight : window.innerHeight - 76;
+        const newPan = {
+          x: svgW / 2 - canvasX * zoomRef.current,
+          y: svgH / 2 - canvasY * zoomRef.current,
+        };
+        setPan(newPan);
+        panRef.current = newPan;
+      }, []);
+
+      /* ── Window-level listeners for pan + minimap drag ── */
+      useEffect(() => {
+        const onWinMove = (e) => {
+          if (dragRef.current?.type === 'pan') {
+            const d = dragRef.current;
+            const newPan = { x: d.startPanX + e.clientX - d.startX, y: d.startPanY + e.clientY - d.startY };
+            setPan(newPan);
+            panRef.current = newPan;
+          } else if (minimapDragRef.current) {
+            applyMinimapPoint(e.clientX, e.clientY, minimapDragRef.current.rect);
+          }
+        };
+        const onWinUp = () => {
+          if (dragRef.current?.type === 'pan') {
+            dragRef.current = null;
+            setIsPanning(false);
+          }
+          minimapDragRef.current = null;
+        };
+        window.addEventListener('mousemove', onWinMove);
+        window.addEventListener('mouseup', onWinUp);
+        return () => {
+          window.removeEventListener('mousemove', onWinMove);
+          window.removeEventListener('mouseup', onWinUp);
+        };
+      }, [applyMinimapPoint]);
+
+      /* ── Wheel zoom (non-passive) ── */
+      useEffect(() => {
+        const svgEl = svgRef.current;
+        if (!svgEl) return;
+        const onWheel = (e) => {
+          e.preventDefault();
+          const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+          const newZoom = Math.min(Math.max(zoomRef.current * factor, 0.05), 8);
+          const r = svgEl.getBoundingClientRect();
+          const sx = e.clientX - r.left, sy = e.clientY - r.top;
+          const ratio = newZoom / zoomRef.current;
+          const newPan = {
+            x: sx - (sx - panRef.current.x) * ratio,
+            y: sy - (sy - panRef.current.y) * ratio,
+          };
+          setZoom(newZoom);
+          zoomRef.current = newZoom;
+          setPan(newPan);
+          panRef.current = newPan;
+        };
+        svgEl.addEventListener('wheel', onWheel, { passive: false });
+        return () => svgEl.removeEventListener('wheel', onWheel);
+      }, []);
+
       /* ── Keyboard shortcuts ── */
       useEffect(() => {
         const keyMap = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
-        const onKey = (e) => {
+        const onKeyDown = (e) => {
+          if (e.key === ' ' && !['INPUT','TEXTAREA'].includes(e.target.tagName)) {
+            if (!editingId) {
+              spacePressedRef.current = true;
+              setSpaceDown(true);
+              e.preventDefault();
+            }
+            return;
+          }
           if (editingId) return;
           if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
 
-          if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+          if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
+          if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
             e.preventDefault();
-            undo();
-            return;
+            const nz = Math.min(zoomRef.current * 1.2, 8);
+            setZoom(nz); zoomRef.current = nz; return;
           }
-
+          if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+            e.preventDefault();
+            const nz = Math.max(zoomRef.current / 1.2, 0.05);
+            setZoom(nz); zoomRef.current = nz; return;
+          }
+          if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+            e.preventDefault();
+            setZoom(1); zoomRef.current = 1; return;
+          }
+          if (e.key === 'Home' && !e.ctrlKey) { resetPan(); return; }
           if (keyMap[e.key] && !e.ctrlKey && !e.metaKey) { setTool(keyMap[e.key]); return; }
 
           if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdsRef.current.size > 0) {
@@ -144,25 +268,42 @@
             setElements(prev => prev.filter(el => !selectedIdsRef.current.has(el.id)));
             setSelectedIds(new Set());
           }
-          if (e.key === 'Escape') { setSelectedIds(new Set()); setEditingId(null); }
+          if (e.key === 'Escape') { setSelectedIds(new Set()); setEditingId(null); setShowShortcuts(false); }
         };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-      }, [editingId, undo, pushHistory]);
+        const onKeyUp = (e) => {
+          if (e.key === ' ') { spacePressedRef.current = false; setSpaceDown(false); }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
+        return () => {
+          window.removeEventListener('keydown', onKeyDown);
+          window.removeEventListener('keyup', onKeyUp);
+        };
+      }, [editingId, undo, pushHistory, resetPan]);
 
       /* ── Mouse down ── */
       const handleDown = useCallback((e) => {
+        // Middle mouse or Space+left → pan
+        if (e.button === 1 || (e.button === 0 && spacePressedRef.current)) {
+          e.preventDefault();
+          dragRef.current = {
+            type: 'pan',
+            startX: e.clientX, startY: e.clientY,
+            startPanX: panRef.current.x, startPanY: panRef.current.y,
+          };
+          setIsPanning(true);
+          return;
+        }
+
         if (e.button !== 0) return;
-        const pt  = getpt(svgRef.current, e);
+        const pt  = getpt(svgRef.current, e, panRef.current.x, panRef.current.y, zoomRef.current);
         const els = elsRef.current;
 
         if (tool === 'select') {
           const target = e.target.closest('[data-elid]');
           if (target) {
             const id = target.dataset.elid;
-
             if (e.shiftKey) {
-              // Shift+click: toggle element in/out of selection
               setSelectedIds(prev => {
                 const next = new Set(prev);
                 if (next.has(id)) next.delete(id); else next.add(id);
@@ -170,32 +311,16 @@
               });
               return;
             }
-
-            // If clicking an already-selected element, keep full selection for group move
-            // Otherwise, single-select the clicked element
             const curIds = selectedIdsRef.current;
             const moveIds = curIds.has(id) ? new Set(curIds) : new Set([id]);
             if (!curIds.has(id)) setSelectedIds(moveIds);
-
             const origs = [...moveIds]
               .map(sid => els.find(el => el.id === sid))
               .filter(Boolean)
               .map(el => ({ ...el }));
-
-            dragRef.current = {
-              type: 'move',
-              origs,
-              startX: pt.x, startY: pt.y,
-              snapshot: [...els],
-              moved: false,
-            };
+            dragRef.current = { type: 'move', origs, startX: pt.x, startY: pt.y, snapshot: [...els], moved: false };
           } else {
-            // Clicked empty canvas
-            if (!e.shiftKey) {
-              setSelectedIds(new Set());
-              setEditingId(null);
-            }
-            // Start rubber-band selection rect
+            if (!e.shiftKey) { setSelectedIds(new Set()); setEditingId(null); }
             const sr = { x: pt.x, y: pt.y, w: 0, h: 0 };
             setSelRect(sr);
             selRectRef.current = sr;
@@ -226,12 +351,13 @@
       /* ── Mouse move ── */
       const handleMove = useCallback((e) => {
         if (!dragRef.current) return;
-        const pt = getpt(svgRef.current, e);
-        const d  = dragRef.current;
+        const d = dragRef.current;
+        if (d.type === 'pan') return; // handled by window listener
+
+        const pt = getpt(svgRef.current, e, panRef.current.x, panRef.current.y, zoomRef.current);
 
         if (d.type === 'move') {
-          const dx = pt.x - d.startX;
-          const dy = pt.y - d.startY;
+          const dx = pt.x - d.startX, dy = pt.y - d.startY;
           if (!d.moved && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) d.moved = true;
           setElements(prev => prev.map(el => {
             const orig = d.origs.find(o => o.id === el.id);
@@ -241,10 +367,8 @@
         }
 
         if (d.type === 'sel-rect') {
-          const x = Math.min(pt.x, d.startX);
-          const y = Math.min(pt.y, d.startY);
-          const w = Math.abs(pt.x - d.startX);
-          const h = Math.abs(pt.y - d.startY);
+          const x = Math.min(pt.x, d.startX), y = Math.min(pt.y, d.startY);
+          const w = Math.abs(pt.x - d.startX), h = Math.abs(pt.y - d.startY);
           const sr = { x, y, w, h };
           setSelRect(sr);
           selRectRef.current = sr;
@@ -257,10 +381,8 @@
           } else if (d.tool === 'arrow') {
             setGhost(prev => prev ? { ...prev, x2: pt.x, y2: pt.y } : null);
           } else {
-            const x = Math.min(pt.x, d.startX);
-            const y = Math.min(pt.y, d.startY);
-            const w = Math.abs(pt.x - d.startX);
-            const h = Math.abs(pt.y - d.startY);
+            const x = Math.min(pt.x, d.startX), y = Math.min(pt.y, d.startY);
+            const w = Math.abs(pt.x - d.startX), h = Math.abs(pt.y - d.startY);
             setGhost(prev => prev ? { ...prev, x, y, width: w, height: h } : null);
           }
         }
@@ -269,19 +391,17 @@
       /* ── Mouse up ── */
       const handleUp = useCallback(() => {
         const d = dragRef.current;
+        if (!d || d.type === 'pan') return;
 
-        if (d?.type === 'move' && d.moved) {
-          // Push pre-move snapshot so Ctrl+Z restores positions
+        if (d.type === 'move' && d.moved) {
           historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
         }
 
-        if (d?.type === 'sel-rect') {
+        if (d.type === 'sel-rect') {
           const r = selRectRef.current;
           if (r && r.w > 5 && r.h > 5) {
             const ids = new Set(
-              elsRef.current
-                .filter(el => overlaps(getBBox(el), r))
-                .map(el => el.id)
+              elsRef.current.filter(el => overlaps(getBBox(el), r)).map(el => el.id)
             );
             if (ids.size > 0) setSelectedIds(ids);
           }
@@ -291,7 +411,7 @@
           return;
         }
 
-        if (d?.type === 'draw') {
+        if (d.type === 'draw') {
           const g = ghostRef.current;
           setGhost(null);
           if (g) {
@@ -307,7 +427,6 @@
             }
           }
         }
-
         dragRef.current = null;
       }, [pushHistory]);
 
@@ -332,14 +451,12 @@
         clone.querySelectorAll('foreignObject[data-elid]').forEach(fo => {
           const id  = fo.getAttribute('data-elid');
           const el  = elsRef.current.find(e => e.id === id);
-          const x   = parseFloat(fo.getAttribute('x') || 0);
-          const y   = parseFloat(fo.getAttribute('y') || 0);
+          const x   = parseFloat(fo.getAttribute('x') || 0) + panRef.current.x;
+          const y   = parseFloat(fo.getAttribute('y') || 0) + panRef.current.y;
           const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          txt.setAttribute('x', x + 6);
-          txt.setAttribute('y', y + 18);
+          txt.setAttribute('x', x + 6); txt.setAttribute('y', y + 18);
           txt.setAttribute('fill', el?.color || '#fff');
-          txt.setAttribute('font-family', 'monospace');
-          txt.setAttribute('font-size', '14');
+          txt.setAttribute('font-family', 'monospace'); txt.setAttribute('font-size', '14');
           (el?.text || '').split('\n').forEach((line, i) => {
             const ts = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
             ts.setAttribute('x', x + 6);
@@ -355,9 +472,8 @@
         const url    = URL.createObjectURL(blob);
         const img    = new Image();
         img.onload = () => {
-          const c   = document.createElement('canvas');
-          c.width   = width;
-          c.height  = height;
+          const c = document.createElement('canvas');
+          c.width = width; c.height = height;
           const ctx = c.getContext('2d');
           ctx.fillStyle = '#0A0F1A';
           ctx.fillRect(0, 0, width, height);
@@ -384,55 +500,40 @@
           const border = sel ? '1px dashed #64FFDA' : '1px solid transparent';
           return (
             <foreignObject
-              key={el.id}
-              data-elid={el.id}
-              x={el.x} y={el.y}
-              width={el.w || 240}
-              height={200}
+              key={el.id} data-elid={el.id}
+              x={el.x} y={el.y} width={el.w || 240} height={200}
               style={{ overflow: 'visible', cursor: tool === 'select' ? 'move' : 'default' }}
               onDoubleClick={(e) => { e.stopPropagation(); if (tool === 'select') setEditingId(el.id); }}
             >
               <div xmlns="http://www.w3.org/1999/xhtml" style={{ display: 'inline-block', minWidth: 80 }}>
                 {editing ? (
                   <textarea
-                    autoFocus
+                    ref={node => { if (node) setTimeout(() => { node.focus(); node.select && node.select(); }, 0); }}
                     value={el.text}
-                    onChange={ev => setElements(prev =>
-                      prev.map(e2 => e2.id === el.id ? { ...e2, text: ev.target.value } : e2)
-                    )}
+                    onChange={ev => {
+                      const val = ev.target.value;
+                      setElements(prev => prev.map(e2 => e2.id === el.id ? { ...e2, text: val } : e2));
+                    }}
                     onBlur={() => setEditingId(null)}
+                    onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setEditingId(null); } }}
                     style={{
                       background: 'rgba(10,15,26,0.92)',
                       border: `1px solid ${el.color || '#64FFDA'}`,
-                      borderRadius: 6,
-                      color: el.color || '#fff',
-                      fontFamily: 'monospace',
-                      fontSize: 14,
-                      lineHeight: 1.6,
-                      padding: '6px 10px',
-                      minWidth: 160,
-                      minHeight: 40,
-                      resize: 'both',
-                      outline: 'none',
+                      borderRadius: 6, color: el.color || '#fff',
+                      fontFamily: 'monospace', fontSize: 14, lineHeight: 1.6,
+                      padding: '6px 10px', minWidth: 160, minHeight: 40,
+                      resize: 'both', outline: 'none',
                       boxShadow: `0 0 12px ${el.color || '#64FFDA'}33`,
                     }}
                   />
                 ) : (
                   <div style={{
-                    color: el.color || '#fff',
-                    fontFamily: 'monospace',
-                    fontSize: 14,
-                    lineHeight: 1.6,
-                    padding: '6px 10px',
-                    minWidth: 80,
-                    minHeight: 28,
-                    whiteSpace: 'pre-wrap',
-                    border,
-                    borderRadius: 6,
-                    cursor: tool === 'select' ? 'move' : 'default',
-                    userSelect: 'none',
+                    color: el.color || '#fff', fontFamily: 'monospace',
+                    fontSize: 14, lineHeight: 1.6, padding: '6px 10px',
+                    minWidth: 80, minHeight: 28, whiteSpace: 'pre-wrap', border,
+                    borderRadius: 6, cursor: tool === 'select' ? 'move' : 'default', userSelect: 'none',
                   }}>
-                    {el.text || <span style={{ opacity: 0.25, fontStyle: 'italic', fontSize: 12 }}>duplo clique...</span>}
+                    {el.text || <span style={{ opacity: 0.25, fontStyle: 'italic', fontSize: 12 }}>texto...</span>}
                   </div>
                 )}
               </div>
@@ -442,20 +543,16 @@
 
         if (el.type === 'rect') return (
           <g key={el.id} data-elid={el.id} style={{ cursor }}>
-            <rect x={el.x} y={el.y} width={el.width} height={el.height}
-              fill="none" stroke={el.color} strokeWidth={sw} rx={4} />
-            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6}
-              fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={7} />}
+            <rect x={el.x} y={el.y} width={el.width} height={el.height} fill="none" stroke={el.color} strokeWidth={sw} rx={4} />
+            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6} fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={7} />}
           </g>
         );
 
         if (el.type === 'group') return (
           <g key={el.id} data-elid={el.id} style={{ cursor }}>
             <rect x={el.x} y={el.y} width={el.width} height={el.height}
-              fill={`${el.color}08`} stroke={el.color} strokeWidth={1.5}
-              strokeDasharray="10 5" rx={10} />
-            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6}
-              fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={12} />}
+              fill={`${el.color}08`} stroke={el.color} strokeWidth={1.5} strokeDasharray="10 5" rx={10} />
+            {sel && <rect x={el.x-3} y={el.y-3} width={el.width+6} height={el.height+6} fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" rx={12} />}
           </g>
         );
 
@@ -463,10 +560,8 @@
           const cx = el.x + el.width/2, cy = el.y + el.height/2;
           return (
             <g key={el.id} data-elid={el.id} style={{ cursor }}>
-              <ellipse cx={cx} cy={cy} rx={el.width/2} ry={el.height/2}
-                fill="none" stroke={el.color} strokeWidth={sw} />
-              {sel && <ellipse cx={cx} cy={cy} rx={el.width/2+4} ry={el.height/2+4}
-                fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" />}
+              <ellipse cx={cx} cy={cy} rx={el.width/2} ry={el.height/2} fill="none" stroke={el.color} strokeWidth={sw} />
+              {sel && <ellipse cx={cx} cy={cy} rx={el.width/2+4} ry={el.height/2+4} fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" />}
             </g>
           );
         }
@@ -480,10 +575,8 @@
                   <polygon points="0 0, 9 3.5, 0 7" fill={el.color} />
                 </marker>
               </defs>
-              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
-                stroke="transparent" strokeWidth={14} />
-              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
-                stroke={el.color} strokeWidth={sw} markerEnd={`url(#${mid})`} />
+              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2} stroke="transparent" strokeWidth={14} />
+              <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2} stroke={el.color} strokeWidth={sw} markerEnd={`url(#${mid})`} />
               {sel && <>
                 <circle cx={el.x1} cy={el.y1} r={5} fill="#64FFDA" opacity={0.5} />
                 <circle cx={el.x2} cy={el.y2} r={5} fill="#64FFDA" opacity={0.5} />
@@ -498,10 +591,8 @@
           return (
             <g key={el.id} data-elid={el.id} style={{ cursor }}>
               <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
-              <path d={d} fill="none" stroke={el.color} strokeWidth={sw}
-                strokeLinecap="round" strokeLinejoin="round" />
-              {sel && <path d={d} fill="none" stroke="#64FFDA" strokeWidth={1}
-                strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />}
+              <path d={d} fill="none" stroke={el.color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+              {sel && <path d={d} fill="none" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" opacity={0.6} />}
             </g>
           );
         }
@@ -511,16 +602,13 @@
       /* ── Render ghost ── */
       const renderGhost = () => {
         if (!ghost) return null;
-        const s = { fill: 'none', stroke: ghost.color, strokeWidth: ghost.strokeW || 2,
-                    strokeDasharray: '5 3', opacity: 0.75 };
+        const s = { fill: 'none', stroke: ghost.color, strokeWidth: ghost.strokeW||2, strokeDasharray: '5 3', opacity: 0.75 };
         if (ghost.type === 'rect')
           return <rect {...s} x={ghost.x} y={ghost.y} width={ghost.width} height={ghost.height} rx={4} />;
         if (ghost.type === 'group')
-          return <rect {...s} x={ghost.x} y={ghost.y} width={ghost.width} height={ghost.height}
-            rx={10} fill={`${ghost.color}06`} />;
+          return <rect {...s} x={ghost.x} y={ghost.y} width={ghost.width} height={ghost.height} rx={10} fill={`${ghost.color}06`} />;
         if (ghost.type === 'circle')
-          return <ellipse {...s} cx={ghost.x+ghost.width/2} cy={ghost.y+ghost.height/2}
-            rx={ghost.width/2} ry={ghost.height/2} />;
+          return <ellipse {...s} cx={ghost.x+ghost.width/2} cy={ghost.y+ghost.height/2} rx={ghost.width/2} ry={ghost.height/2} />;
         if (ghost.type === 'arrow')
           return <line {...s} strokeDasharray="none" x1={ghost.x1} y1={ghost.y1} x2={ghost.x2} y2={ghost.y2} />;
         if (ghost.type === 'freehand') {
@@ -530,16 +618,102 @@
         return null;
       };
 
-      const selEl      = selectedIds.size === 1 ? elements.find(e => selectedIds.has(e.id)) : null;
+      /* ── Minimap ── */
+      const renderMinimap = () => {
+        const MW = 180, MH = 112, SCALE = 0.06;
+        const svgEl = svgRef.current;
+        const svgW  = svgEl ? svgEl.clientWidth  : window.innerWidth;
+        const svgH  = svgEl ? svgEl.clientHeight : window.innerHeight - 76;
+        const cx = MW / 2, cy = MH / 2;
+        const toMX = (canvasX) => cx + canvasX * SCALE;
+        const toMY = (canvasY) => cy + canvasY * SCALE;
+        // viewport position/size in canvas coords, then projected to minimap
+        const vpCanvasX = -pan.x / zoom;
+        const vpCanvasY = -pan.y / zoom;
+        const vpCanvasW = svgW / zoom;
+        const vpCanvasH = svgH / zoom;
+        const vpMX = toMX(vpCanvasX);
+        const vpMY = toMY(vpCanvasY);
+        const vpMW = vpCanvasW * SCALE;
+        const vpMH = vpCanvasH * SCALE;
+
+        const onMinimapDown = (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const rect = e.currentTarget.getBoundingClientRect();
+          minimapDragRef.current = { rect };
+          applyMinimapPoint(e.clientX, e.clientY, rect);
+        };
+
+        return (
+          <div style={{
+            position: 'fixed', bottom: 32, right: 12,
+            background: '#0A0F1Aee', border: '1px solid #1E2D3D',
+            borderRadius: 8, overflow: 'hidden',
+            boxShadow: '0 4px 20px #00000060',
+            userSelect: 'none',
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '3px 8px', borderBottom: '1px solid #1A2535', background: '#0F172A',
+            }}>
+              <span style={{ color: '#2A4050', fontSize: 9, letterSpacing: 1 }}>MAPA</span>
+              <button onClick={() => setShowMinimap(false)} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: '#2A4050', fontSize: 10, padding: '0 2px', lineHeight: 1,
+              }}>✕</button>
+            </div>
+            <svg width={MW} height={MH} style={{ display: 'block', cursor: 'crosshair' }}
+              onMouseDown={onMinimapDown}>
+              <rect width={MW} height={MH} fill="#0A0F1A" />
+              {/* dot grid hint */}
+              <line x1={cx} y1={0} x2={cx} y2={MH} stroke="#162030" strokeWidth={0.5} />
+              <line x1={0} y1={cy} x2={MW} y2={cy} stroke="#162030" strokeWidth={0.5} />
+              {/* elements */}
+              {elements.map(el => {
+                if (el.type === 'freehand') {
+                  if (!el.points?.length) return null;
+                  const d = el.points.reduce((acc, [px,py], i) => {
+                    const mmx = toMX(px), mmy = toMY(py);
+                    return i === 0 ? `M${mmx},${mmy}` : `${acc}L${mmx},${mmy}`;
+                  }, '');
+                  return <path key={el.id} d={d} fill="none" stroke={el.color} strokeWidth={0.8} opacity={0.6} strokeLinecap="round" />;
+                }
+                if (el.type === 'arrow') {
+                  return <line key={el.id}
+                    x1={toMX(el.x1)} y1={toMY(el.y1)} x2={toMX(el.x2)} y2={toMY(el.y2)}
+                    stroke={el.color} strokeWidth={0.8} opacity={0.6} />;
+                }
+                const bb = getBBox(el);
+                const mmx = toMX(bb.x), mmy = toMY(bb.y);
+                const mw = Math.max(bb.w * SCALE, 2), mh = Math.max(bb.h * SCALE, 2);
+                if (el.type === 'circle') {
+                  return <ellipse key={el.id} cx={mmx+mw/2} cy={mmy+mh/2} rx={mw/2} ry={mh/2}
+                    fill="none" stroke={el.color} strokeWidth={0.8} opacity={0.6} />;
+                }
+                return <rect key={el.id} x={mmx} y={mmy} width={mw} height={mh}
+                  fill={el.type === 'text' ? el.color : 'none'}
+                  stroke={el.type !== 'text' ? el.color : 'none'}
+                  strokeWidth={0.8} opacity={0.5} rx={0.5} />;
+              })}
+              {/* viewport rectangle */}
+              <rect x={vpMX} y={vpMY} width={vpMW} height={vpMH}
+                fill="#64FFDA05" stroke="#64FFDA" strokeWidth={0.8} strokeDasharray="3 2" />
+            </svg>
+          </div>
+        );
+      };
+
+      const selEl        = selectedIds.size === 1 ? elements.find(e => selectedIds.has(e.id)) : null;
       const hasSelection = selectedIds.size > 0;
-      const cursorMap  = { select: 'default', text: 'text', rect: 'crosshair',
-        circle: 'crosshair', arrow: 'crosshair', freehand: 'crosshair', group: 'crosshair' };
+      const panCursor    = isPanning ? 'grabbing' : spaceDown ? 'grab' : null;
+      const baseCursor   = { select: 'default', text: 'text', rect: 'crosshair', circle: 'crosshair', arrow: 'crosshair', freehand: 'crosshair', group: 'crosshair' };
+      const svgCursor    = panCursor || baseCursor[tool] || 'default';
 
       /* ── JSX ── */
       return (
         <div style={{
-          width: '100%', height: '100vh',
-          background: '#0A0F1A',
+          width: '100%', height: '100vh', background: '#0A0F1A',
           display: 'flex', flexDirection: 'column',
           fontFamily: '"Segoe UI", system-ui, sans-serif',
           userSelect: 'none', touchAction: 'none',
@@ -547,11 +721,9 @@
 
           {/* TOP BAR */}
           <div style={{
-            height: 52, background: '#0F172A',
-            borderBottom: '1px solid #1E2D3D',
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 14px', flexShrink: 0, gap: 10,
+            height: 52, background: '#0F172A', borderBottom: '1px solid #1E2D3D',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '0 14px', flexShrink: 0, gap: 10, position: 'relative',
           }}>
 
             {/* Brand */}
@@ -569,23 +741,33 @@
 
             {/* Tools */}
             <div style={{ display: 'flex', gap: 2 }}>
-              {TOOLS.map(t => (
-                <button key={t.id} onClick={() => setTool(t.id)}
-                  title={`${t.label}  [${t.key.toUpperCase()}]`}
-                  style={{
-                    background: tool === t.id ? '#64FFDA18' : 'transparent',
-                    border: `1px solid ${tool === t.id ? '#64FFDA44' : 'transparent'}`,
-                    borderRadius: 7, cursor: 'pointer',
-                    color: tool === t.id ? '#64FFDA' : '#4A6A7A',
-                    fontSize: t.id === 'text' ? 12 : 14,
-                    fontFamily: 'inherit',
-                    fontWeight: t.id === 'text' ? 800 : 400,
-                    width: 30, height: 30,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'all 0.12s',
-                  }}
-                >{t.glyph}</button>
-              ))}
+              {TOOLS.map(t => {
+                const active = tool === t.id;
+                return (
+                  <button key={t.id} onClick={() => setTool(t.id)}
+                    title={`${t.label}  [${t.key.toUpperCase()}]`}
+                    style={{
+                      background: active ? '#64FFDA18' : 'transparent',
+                      border: `1px solid ${active ? '#64FFDA44' : 'transparent'}`,
+                      borderRadius: 7, cursor: 'pointer',
+                      color: active ? '#64FFDA' : '#4A6A7A',
+                      fontSize: t.id === 'text' ? 12 : 14, fontFamily: 'inherit',
+                      fontWeight: t.id === 'text' ? 800 : 400,
+                      width: 30, height: 30,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      transition: 'all 0.12s',
+                    }}
+                  >
+                    {t.id === 'select' ? (
+                      /* Custom cursor SVG icon — distinct from arrow elements */
+                      <svg width="14" height="16" viewBox="0 0 14 16" fill="none">
+                        <path d="M2 1 L2 12.5 L4.8 9.7 L7 14.5 L8.8 13.7 L6.6 8.9 L10.5 8.9 Z"
+                          fill={active ? '#64FFDA' : '#4A6A7A'} strokeLinejoin="round" />
+                      </svg>
+                    ) : t.glyph}
+                  </button>
+                );
+              })}
             </div>
 
             <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
@@ -597,13 +779,10 @@
                   onClick={() => {
                     setColor(p.color);
                     if (hasSelection)
-                      setElements(prev => prev.map(el =>
-                        selectedIds.has(el.id) ? { ...el, color: p.color } : el
-                      ));
+                      setElements(prev => prev.map(el => selectedIds.has(el.id) ? { ...el, color: p.color } : el));
                   }}
                   style={{
-                    width: 15, height: 15, borderRadius: '50%',
-                    background: p.color,
+                    width: 15, height: 15, borderRadius: '50%', background: p.color,
                     border: `2px solid ${color === p.color ? p.color : 'transparent'}`,
                     outline: color === p.color ? '2px solid rgba(255,255,255,0.25)' : 'none',
                     cursor: 'pointer', padding: 0, flexShrink: 0,
@@ -616,7 +795,7 @@
 
             <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
 
-            {/* Stroke */}
+            {/* Stroke width */}
             <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
               {[1, 2, 3, 5].map(w => (
                 <button key={w} title={`${w}px`} onClick={() => setStrokeW(w)}
@@ -633,27 +812,89 @@
               ))}
             </div>
 
+            <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
+
+            {/* Keyboard shortcuts button */}
+            <button
+              onClick={() => setShowShortcuts(s => !s)}
+              title="Atalhos de teclado"
+              style={{
+                background: showShortcuts ? '#64FFDA18' : 'transparent',
+                border: `1px solid ${showShortcuts ? '#64FFDA44' : '#1E2D3D'}`,
+                borderRadius: 7, cursor: 'pointer',
+                color: showShortcuts ? '#64FFDA' : '#4A6A7A',
+                fontSize: 12, fontWeight: 700, width: 26, height: 26,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >?</button>
+
+            {/* Shortcuts panel */}
+            {showShortcuts && <>
+              <div
+                style={{ position: 'fixed', inset: 0, zIndex: 99 }}
+                onClick={() => setShowShortcuts(false)}
+              />
+              <div style={{
+                position: 'absolute', top: 54, left: '50%', transform: 'translateX(-50%)',
+                background: '#0F172A', border: '1px solid #1E2D3D',
+                borderRadius: 10, padding: '14px 18px', zIndex: 100,
+                display: 'grid', gridTemplateColumns: '1fr 1fr',
+                gap: '8px 28px', boxShadow: '0 8px 32px #00000080', minWidth: 380,
+              }}>
+                <div style={{ gridColumn: '1/-1', color: '#64FFDA', fontSize: 10, letterSpacing: 2, marginBottom: 4 }}>
+                  ATALHOS DE TECLADO
+                </div>
+                {SHORTCUTS.map(({ key, desc }) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <kbd style={{
+                      background: '#1E2D3D', border: '1px solid #2A4050', borderRadius: 4,
+                      padding: '1px 6px', color: '#64FFDA', fontFamily: 'monospace',
+                      fontSize: 10, whiteSpace: 'nowrap', flexShrink: 0,
+                    }}>{key}</kbd>
+                    <span style={{ color: '#4A6A7A', fontSize: 11 }}>{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </>}
+
             <div style={{ flex: 1 }} />
 
-            {/* Actions */}
+            {/* Action buttons */}
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+
+              {/* Center view */}
+              <button
+                onClick={resetPan}
+                title="Centralizar canvas [Home]"
+                style={{
+                  background: 'transparent', border: '1px solid #1E2D3D',
+                  borderRadius: 7, color: '#4A6A7A', cursor: 'pointer',
+                  padding: '4px 7px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D';   e.currentTarget.style.color='#4A6A7A'; }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <circle cx="7" cy="7" r="2" />
+                  <line x1="7" y1="0.5" x2="7" y2="3.5" />
+                  <line x1="7" y1="10.5" x2="7" y2="13.5" />
+                  <line x1="0.5" y1="7" x2="3.5" y2="7" />
+                  <line x1="10.5" y1="7" x2="13.5" y2="7" />
+                </svg>
+              </button>
 
               {/* Undo */}
               <button
-                onClick={undo}
-                title="Desfazer  [Ctrl+Z]"
+                onClick={undo} title="Desfazer  [Ctrl+Z]"
                 disabled={historyRef.current.length === 0}
                 style={{
-                  background: 'transparent',
-                  border: '1px solid #1E2D3D',
-                  borderRadius: 7,
-                  color: '#4A6A7A',
-                  cursor: 'pointer',
+                  background: 'transparent', border: '1px solid #1E2D3D',
+                  borderRadius: 7, color: '#4A6A7A', cursor: 'pointer',
                   fontSize: 13, padding: '4px 10px', fontFamily: 'inherit',
                   opacity: historyRef.current.length === 0 ? 0.35 : 1,
                 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D'; e.currentTarget.style.color='#4A6A7A'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D';   e.currentTarget.style.color='#4A6A7A'; }}
               >↩</button>
 
               {hasSelection && (
@@ -668,9 +909,7 @@
                     borderRadius: 7, color: '#FF6B6B', cursor: 'pointer',
                     fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
                   }}
-                >
-                  ✕ {selectedIds.size > 1 ? `deletar (${selectedIds.size})` : 'deletar'}
-                </button>
+                >✕ {selectedIds.size > 1 ? `deletar (${selectedIds.size})` : 'deletar'}</button>
               )}
 
               <button
@@ -700,13 +939,13 @@
                   fontSize: 11, padding: '4px 10px', fontFamily: 'inherit',
                 }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D'; e.currentTarget.style.color='#4A6A7A'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D';   e.currentTarget.style.color='#4A6A7A'; }}
               >↓ JSON</button>
 
               <button onClick={exportPNG}
                 style={{
-                  background: '#64FFDA', border: 'none',
-                  borderRadius: 7, color: '#0A0F1A', cursor: 'pointer',
+                  background: '#64FFDA', border: 'none', borderRadius: 7,
+                  color: '#0A0F1A', cursor: 'pointer',
                   fontSize: 11, fontWeight: 700, padding: '4px 12px', fontFamily: 'inherit',
                 }}
               >↓ PNG</button>
@@ -716,34 +955,52 @@
           {/* CANVAS SVG */}
           <svg
             ref={svgRef}
-            style={{ flex: 1, display: 'block', cursor: cursorMap[tool] || 'default' }}
+            style={{ flex: 1, display: 'block', cursor: svgCursor }}
             onMouseDown={handleDown}
             onMouseMove={handleMove}
             onMouseUp={handleUp}
             onMouseLeave={handleUp}
           >
             <defs>
-              <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+              {/* Pattern pans with canvas via patternTransform */}
+              <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse"
+                patternTransform={`translate(${((pan.x % 28) + 28) % 28}, ${((pan.y % 28) + 28) % 28})`}>
                 <circle cx="14" cy="14" r="0.8" fill="#162030" />
               </pattern>
             </defs>
             <rect width="100%" height="100%" fill="url(#dots)" />
-            {elements.filter(e => e.type === 'group').map(renderEl)}
-            {elements.filter(e => e.type !== 'group').map(renderEl)}
-            {renderGhost()}
-            {/* Rubber-band selection rect */}
-            {selRect && selRect.w > 0 && selRect.h > 0 && (
-              <rect
-                x={selRect.x} y={selRect.y} width={selRect.w} height={selRect.h}
-                fill="#64FFDA08" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3"
-              />
-            )}
+
+            {/* All canvas content inside pan+zoom group */}
+            <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+              {elements.filter(e => e.type === 'group').map(renderEl)}
+              {elements.filter(e => e.type !== 'group').map(renderEl)}
+              {renderGhost()}
+              {selRect && selRect.w > 0 && selRect.h > 0 && (
+                <rect
+                  x={selRect.x} y={selRect.y} width={selRect.w} height={selRect.h}
+                  fill="#64FFDA08" stroke="#64FFDA" strokeWidth={1} strokeDasharray="5 3"
+                />
+              )}
+            </g>
           </svg>
+
+          {/* MINIMAP */}
+          {showMinimap && renderMinimap()}
+          {!showMinimap && (
+            <button
+              onClick={() => setShowMinimap(true)}
+              style={{
+                position: 'fixed', bottom: 32, right: 12,
+                background: '#0F172A', border: '1px solid #1E2D3D',
+                borderRadius: 6, color: '#4A6A7A', cursor: 'pointer',
+                fontSize: 9, padding: '4px 8px', fontFamily: 'inherit', letterSpacing: 1,
+              }}
+            >MAPA</button>
+          )}
 
           {/* STATUS BAR */}
           <div style={{
-            height: 24, background: '#0A0F1A',
-            borderTop: '1px solid #1A2535',
+            height: 24, background: '#0A0F1A', borderTop: '1px solid #1A2535',
             display: 'flex', alignItems: 'center',
             padding: '0 14px', flexShrink: 0, gap: 16,
           }}>
@@ -757,13 +1014,16 @@
                 freehand: ' — segure e arraste para desenhar',
                 group:    ' — arraste para criar um grupo',
                 select: selectedIds.size > 1
-                  ? ` — ${selectedIds.size} elementos selecionados · arraste para mover · DEL para deletar`
+                  ? ` — ${selectedIds.size} elementos · arraste para mover · DEL para deletar`
                   : selEl
-                  ? ` — ${selEl.type} selecionado · duplo clique para editar texto · DEL para deletar`
+                  ? ` — ${selEl.type} selecionado · duplo clique para editar · DEL para deletar`
                   : ' — clique para selecionar · shift+clique ou arraste para multi-selecionar · Ctrl+Z desfaz',
               })[tool]}
+              {(spaceDown || isPanning) ? '  ·  ESPAÇO — arraste para navegar' : ''}
             </span>
             <span style={{ color: '#2A4050', fontSize: 10, marginLeft: 'auto', letterSpacing: 0.5 }}>
+              {zoom !== 1 ? `${Math.round(zoom * 100)}% · ` : ''}
+              {pan.x !== 0 || pan.y !== 0 ? `pan ${Math.round(pan.x)},${Math.round(pan.y)} · ` : ''}
               {hasSelection ? `${selectedIds.size} selecionado${selectedIds.size !== 1 ? 's' : ''} · ` : ''}
               {elements.length} elemento{elements.length !== 1 ? 's' : ''}
             </span>
@@ -772,7 +1032,6 @@
       );
     }
 
-    // Remove loading screen and mount app
     document.getElementById('loading').style.display = 'none';
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<BrainstormCanvas />);
