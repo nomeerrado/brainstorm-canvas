@@ -508,7 +508,7 @@
               <div xmlns="http://www.w3.org/1999/xhtml" style={{ display: 'inline-block', minWidth: 80 }}>
                 {editing ? (
                   <textarea
-                    ref={node => { if (node) setTimeout(() => { node.focus(); node.select && node.select(); }, 0); }}
+                    ref={node => { if (node && !node.dataset.focused) { node.dataset.focused = '1'; setTimeout(() => node.focus(), 0); } }}
                     value={el.text}
                     onChange={ev => {
                       const val = ev.target.value;
