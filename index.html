@@ -100,12 +100,49 @@
         const xs = el.points.map(([px]) => px), ys = el.points.map(([,py]) => py);
         return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs)-Math.min(...xs)||1, h: Math.max(...ys)-Math.min(...ys)||1 };
       }
-      if (el.type === 'text') return { x: el.x, y: el.y, w: el.w||240, h: 40 };
+      if (el.type === 'text') {
+        const fs = el.fontSize || 14;
+        const lines = Math.max(1, (el.text || '').split('\n').length);
+        return { x: el.x, y: el.y, w: el.w||240, h: Math.round(fs * 1.6 * lines + 12) };
+      }
       return { x: el.x||0, y: el.y||0, w: el.width||1, h: el.height||1 };
     }
 
     function overlaps(bb, r) {
       return bb.x < r.x+r.w && bb.x+bb.w > r.x && bb.y < r.y+r.h && bb.y+bb.h > r.y;
+    }
+
+    function resizeEl(orig, handle, dx, dy) {
+      if (orig.type === 'arrow') {
+        if (handle === 'p1') return { ...orig, x1: orig.x1+dx, y1: orig.y1+dy };
+        if (handle === 'p2') return { ...orig, x2: orig.x2+dx, y2: orig.y2+dy };
+        return orig;
+      }
+      if (orig.type === 'text') {
+        const origW = orig.w || 240;
+        let x = orig.x, w = origW;
+        if (handle.includes('e')) w = Math.max(60, origW + dx);
+        if (handle.includes('w')) { const nw = Math.max(60, origW - dx); x = orig.x + origW - nw; w = nw; }
+        return { ...orig, x, w };
+      }
+      if (orig.type === 'freehand') {
+        const bb = getBBox(orig);
+        let x = bb.x, y = bb.y, w = bb.w, h = bb.h;
+        if (handle.includes('e')) w = Math.max(8, bb.w + dx);
+        if (handle.includes('s')) h = Math.max(8, bb.h + dy);
+        if (handle.includes('w')) { const nw = Math.max(8, bb.w - dx); x = bb.x + bb.w - nw; w = nw; }
+        if (handle.includes('n')) { const nh = Math.max(8, bb.h - dy); y = bb.y + bb.h - nh; h = nh; }
+        const sx = w / bb.w, sy = h / bb.h;
+        const points = orig.points.map(([px, py]) => [x + (px - bb.x) * sx, y + (py - bb.y) * sy]);
+        return { ...orig, points };
+      }
+      const origW = orig.width, origH = orig.height;
+      let x = orig.x, y = orig.y, w = origW, h = origH;
+      if (handle.includes('e')) w = Math.max(8, origW + dx);
+      if (handle.includes('s')) h = Math.max(8, origH + dy);
+      if (handle.includes('w')) { const nw = Math.max(8, origW - dx); x = orig.x + origW - nw; w = nw; }
+      if (handle.includes('n')) { const nh = Math.max(8, origH - dy); y = orig.y + origH - nh; h = nh; }
+      return { ...orig, x, y, width: w, height: h };
     }
 
     function BrainstormCanvas() {
@@ -117,6 +154,7 @@
       const [ghost, setGhost]                 = useState(null);
       const [selRect, setSelRect]             = useState(null);
       const [strokeW, setStrokeW]             = useState(2);
+      const [fontSize, setFontSize]           = useState(14);
       const [pan, setPan]                     = useState({ x: 0, y: 0 });
       const [spaceDown, setSpaceDown]         = useState(false);
       const [isPanning, setIsPanning]         = useState(false);
@@ -300,6 +338,19 @@
         const els = elsRef.current;
 
         if (tool === 'select') {
+          const handleTarget = e.target.closest('[data-handle]');
+          if (handleTarget) {
+            const handle = handleTarget.dataset.handle;
+            const id = handleTarget.dataset.elid;
+            const orig = els.find(el => el.id === id);
+            if (orig) {
+              dragRef.current = {
+                type: 'resize', handle, id, orig: { ...orig, points: orig.points ? [...orig.points] : undefined },
+                startX: pt.x, startY: pt.y, snapshot: [...els], moved: false,
+              };
+              return;
+            }
+          }
           const target = e.target.closest('[data-elid]');
           if (target) {
             const id = target.dataset.elid;
@@ -332,7 +383,7 @@
         if (tool === 'text') {
           pushHistory();
           const id    = genId();
-          const newEl = { id, type: 'text', x: pt.x - 4, y: pt.y - 14, w: 240, text: '', color };
+          const newEl = { id, type: 'text', x: pt.x - 4, y: pt.y - 14, w: 240, text: '', color, fontSize };
           setElements(prev => [...prev, newEl]);
           setSelectedIds(new Set([id]));
           setEditingId(id);
@@ -355,6 +406,13 @@
         if (d.type === 'pan') return; // handled by window listener
 
         const pt = getpt(svgRef.current, e, panRef.current.x, panRef.current.y, zoomRef.current);
+
+        if (d.type === 'resize') {
+          const dx = pt.x - d.startX, dy = pt.y - d.startY;
+          if (!d.moved && (Math.abs(dx) > 1 || Math.abs(dy) > 1)) d.moved = true;
+          setElements(prev => prev.map(el => el.id === d.id ? resizeEl(d.orig, d.handle, dx, dy) : el));
+          return;
+        }
 
         if (d.type === 'move') {
           const dx = pt.x - d.startX, dy = pt.y - d.startY;
@@ -395,6 +453,12 @@
 
         if (d.type === 'move' && d.moved) {
           historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
+        }
+
+        if (d.type === 'resize') {
+          if (d.moved) historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
+          dragRef.current = null;
+          return;
         }
 
         if (d.type === 'sel-rect') {
@@ -498,10 +562,11 @@
 
         if (el.type === 'text') {
           const border = sel ? '1px dashed #64FFDA' : '1px solid transparent';
+          const fs = el.fontSize || 14;
           return (
             <foreignObject
               key={el.id} data-elid={el.id}
-              x={el.x} y={el.y} width={el.w || 240} height={200}
+              x={el.x} y={el.y} width={el.w || 240} height={Math.max(200, fs * 1.6 * Math.max(1, (el.text||'').split('\n').length) + 40)}
               style={{ overflow: 'visible', cursor: tool === 'select' ? 'move' : 'default' }}
               onDoubleClick={(e) => { e.stopPropagation(); if (tool === 'select') setEditingId(el.id); }}
             >
@@ -520,16 +585,16 @@
                       background: 'rgba(10,15,26,0.92)',
                       border: `1px solid ${el.color || '#64FFDA'}`,
                       borderRadius: 6, color: el.color || '#fff',
-                      fontFamily: 'monospace', fontSize: 14, lineHeight: 1.6,
+                      fontFamily: 'monospace', fontSize: fs, lineHeight: 1.6,
                       padding: '6px 10px', minWidth: 160, minHeight: 40,
-                      resize: 'both', outline: 'none',
+                      resize: 'both', outline: 'none', width: '100%',
                       boxShadow: `0 0 12px ${el.color || '#64FFDA'}33`,
                     }}
                   />
                 ) : (
                   <div style={{
                     color: el.color || '#fff', fontFamily: 'monospace',
-                    fontSize: 14, lineHeight: 1.6, padding: '6px 10px',
+                    fontSize: fs, lineHeight: 1.6, padding: '6px 10px',
                     minWidth: 80, minHeight: 28, whiteSpace: 'pre-wrap', border,
                     borderRadius: 6, cursor: tool === 'select' ? 'move' : 'default', userSelect: 'none',
                   }}>
@@ -597,6 +662,55 @@
           );
         }
         return null;
+      };
+
+      /* ── Resize handles for the single selected element ── */
+      const renderHandles = () => {
+        if (tool !== 'select' || selectedIds.size !== 1 || editingId) return null;
+        const id = [...selectedIds][0];
+        const el = elements.find(e => e.id === id);
+        if (!el) return null;
+        const s = 8 / zoom; // handle size in canvas units
+        const stroke = 1 / zoom;
+        const handleStyle = { fill: '#0A0F1A', stroke: '#64FFDA', strokeWidth: stroke };
+
+        if (el.type === 'arrow') {
+          return (
+            <g>
+              <circle data-handle="p1" data-elid={el.id}
+                cx={el.x1} cy={el.y1} r={s*0.7}
+                style={{ ...handleStyle, cursor: 'crosshair' }} />
+              <circle data-handle="p2" data-elid={el.id}
+                cx={el.x2} cy={el.y2} r={s*0.7}
+                style={{ ...handleStyle, cursor: 'crosshair' }} />
+            </g>
+          );
+        }
+
+        if (el.type === 'text') return null;
+
+        const bb = getBBox(el);
+        const cx = bb.x + bb.w / 2 - s/2;
+        const cy = bb.y + bb.h / 2 - s/2;
+        const handles = [
+          { id: 'nw', x: bb.x - s/2,         y: bb.y - s/2,         c: 'nwse-resize' },
+          { id: 'n',  x: cx,                 y: bb.y - s/2,         c: 'ns-resize'   },
+          { id: 'ne', x: bb.x + bb.w - s/2,  y: bb.y - s/2,         c: 'nesw-resize' },
+          { id: 'e',  x: bb.x + bb.w - s/2,  y: cy,                 c: 'ew-resize'   },
+          { id: 'se', x: bb.x + bb.w - s/2,  y: bb.y + bb.h - s/2,  c: 'nwse-resize' },
+          { id: 's',  x: cx,                 y: bb.y + bb.h - s/2,  c: 'ns-resize'   },
+          { id: 'sw', x: bb.x - s/2,         y: bb.y + bb.h - s/2,  c: 'nesw-resize' },
+          { id: 'w',  x: bb.x - s/2,         y: cy,                 c: 'ew-resize'   },
+        ];
+        return (
+          <g>
+            {handles.map(h => (
+              <rect key={h.id} data-handle={h.id} data-elid={el.id}
+                x={h.x} y={h.y} width={s} height={s}
+                style={{ ...handleStyle, cursor: h.c }} />
+            ))}
+          </g>
+        );
       };
 
       /* ── Render ghost ── */
@@ -814,6 +928,41 @@
 
             <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
 
+            {/* Font size */}
+            {(() => {
+              const selTexts = elements.filter(el => el.type === 'text' && selectedIds.has(el.id));
+              const currentFs = selTexts.length === 1 ? (selTexts[0].fontSize || 14) : fontSize;
+              const applyFs = (delta) => {
+                const next = Math.max(8, Math.min(96, currentFs + delta));
+                if (selTexts.length > 0) {
+                  pushHistory();
+                  setElements(prev => prev.map(el =>
+                    (el.type === 'text' && selectedIds.has(el.id))
+                      ? { ...el, fontSize: Math.max(8, Math.min(96, (el.fontSize || 14) + delta)) }
+                      : el
+                  ));
+                }
+                setFontSize(next);
+              };
+              const btn = {
+                background: 'transparent', border: '1px solid #1E2D3D',
+                borderRadius: 5, color: '#4A6A7A', cursor: 'pointer',
+                width: 24, height: 24, fontFamily: 'inherit', padding: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              };
+              return (
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} title="Tamanho da fonte">
+                  <button style={{ ...btn, fontSize: 11 }} onClick={() => applyFs(-2)}>A−</button>
+                  <span style={{ color: '#64FFDA', fontSize: 10, fontFamily: 'monospace', minWidth: 18, textAlign: 'center' }}>
+                    {currentFs}
+                  </span>
+                  <button style={{ ...btn, fontSize: 14, fontWeight: 700 }} onClick={() => applyFs(2)}>A+</button>
+                </div>
+              );
+            })()}
+
+            <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
+
             {/* Keyboard shortcuts button */}
             <button
               onClick={() => setShowShortcuts(s => !s)}
@@ -975,6 +1124,7 @@
               {elements.filter(e => e.type === 'group').map(renderEl)}
               {elements.filter(e => e.type !== 'group').map(renderEl)}
               {renderGhost()}
+              {renderHandles()}
               {selRect && selRect.w > 0 && selRect.h > 0 && (
                 <rect
                   x={selRect.x} y={selRect.y} width={selRect.w} height={selRect.h}
