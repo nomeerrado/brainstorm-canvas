@@ -179,6 +179,35 @@
       useEffect(() => { ghostRef.current = ghost; }, [ghost]);
       useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
+      /* ── Autosave (localStorage) ── */
+      const STORAGE_KEY = 'brainstorm-canvas:v1';
+      const loadedRef = useRef(false);
+
+      useEffect(() => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const data = JSON.parse(raw);
+            if (Array.isArray(data.elements)) setElements(data.elements);
+          }
+        } catch (err) {
+          console.warn('Falha ao carregar canvas salvo:', err);
+        }
+        loadedRef.current = true;
+      }, []);
+
+      useEffect(() => {
+        if (!loadedRef.current) return;
+        const t = setTimeout(() => {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, elements }));
+          } catch (err) {
+            console.warn('Falha ao salvar canvas:', err);
+          }
+        }, 300);
+        return () => clearTimeout(t);
+      }, [elements]);
+
       const resetPan = useCallback(() => {
         const z = { x: 0, y: 0 };
         setPan(z);
@@ -910,21 +939,37 @@
             <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
 
             {/* Stroke width */}
-            <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-              {[1, 2, 3, 5].map(w => (
-                <button key={w} title={`${w}px`} onClick={() => setStrokeW(w)}
-                  style={{
-                    width: 26, height: 26,
-                    background: strokeW === w ? '#64FFDA18' : 'transparent',
-                    border: `1px solid ${strokeW === w ? '#64FFDA44' : 'transparent'}`,
-                    borderRadius: 5, cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  <div style={{ width: 12, height: w, background: strokeW === w ? '#64FFDA' : '#4A6A7A', borderRadius: 1 }} />
-                </button>
-              ))}
-            </div>
+            {(() => {
+              const strokable = el => el.type === 'freehand' || el.type === 'arrow' || el.type === 'rect' || el.type === 'circle';
+              const selStroke = elements.filter(el => strokable(el) && selectedIds.has(el.id));
+              const current = selStroke.length === 1 ? (selStroke[0].strokeW || 2) : strokeW;
+              const apply = w => {
+                if (selStroke.length > 0) {
+                  pushHistory();
+                  setElements(prev => prev.map(el =>
+                    (strokable(el) && selectedIds.has(el.id)) ? { ...el, strokeW: w } : el
+                  ));
+                }
+                setStrokeW(w);
+              };
+              return (
+                <div style={{ display: 'flex', gap: 3, alignItems: 'center' }} title="Espessura do traço">
+                  {[1, 2, 3, 5, 8, 12].map(w => (
+                    <button key={w} title={`${w}px`} onClick={() => apply(w)}
+                      style={{
+                        width: 26, height: 26,
+                        background: current === w ? '#64FFDA18' : 'transparent',
+                        border: `1px solid ${current === w ? '#64FFDA44' : 'transparent'}`,
+                        borderRadius: 5, cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      <div style={{ width: 14, height: Math.min(w, 12), background: current === w ? '#64FFDA' : '#4A6A7A', borderRadius: w >= 4 ? 2 : 1 }} />
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
 
             <div style={{ width: 1, height: 22, background: '#1E2D3D', flexShrink: 0 }} />
 
