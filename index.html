@@ -66,6 +66,7 @@
       { key: 'F', desc: 'Livre' },
       { key: 'G', desc: 'Grupo' },
       { key: 'Ctrl+Z', desc: 'Desfazer' },
+      { key: 'Ctrl+Y', desc: 'Refazer' },
       { key: 'Del', desc: 'Deletar seleção' },
       { key: 'Esc', desc: 'Desselecionar' },
       { key: 'Home', desc: 'Centralizar canvas' },
@@ -169,6 +170,9 @@
       const ghostRef        = useRef(null);
       const selRectRef      = useRef(null);
       const historyRef      = useRef([]);
+      const redoRef         = useRef([]);
+      const [histLen, setHistLen] = useState(0);
+      const [redoLen, setRedoLen] = useState(0);
       const panRef          = useRef({ x: 0, y: 0 });
       const zoomRef         = useRef(1);
       const spacePressedRef = useRef(false);
@@ -216,13 +220,38 @@
 
       const pushHistory = useCallback(() => {
         historyRef.current = [...historyRef.current.slice(-49), [...elsRef.current]];
+        redoRef.current = [];
+        setHistLen(historyRef.current.length);
+        setRedoLen(0);
+      }, []);
+
+      const pushHistorySnapshot = useCallback((snapshot) => {
+        historyRef.current = [...historyRef.current.slice(-49), snapshot];
+        redoRef.current = [];
+        setHistLen(historyRef.current.length);
+        setRedoLen(0);
       }, []);
 
       const undo = useCallback(() => {
         if (historyRef.current.length === 0) return;
         const prev = historyRef.current[historyRef.current.length - 1];
         historyRef.current = historyRef.current.slice(0, -1);
+        redoRef.current = [...redoRef.current.slice(-49), [...elsRef.current]];
+        setHistLen(historyRef.current.length);
+        setRedoLen(redoRef.current.length);
         setElements(prev);
+        setSelectedIds(new Set());
+        setEditingId(null);
+      }, []);
+
+      const redo = useCallback(() => {
+        if (redoRef.current.length === 0) return;
+        const next = redoRef.current[redoRef.current.length - 1];
+        redoRef.current = redoRef.current.slice(0, -1);
+        historyRef.current = [...historyRef.current.slice(-49), [...elsRef.current]];
+        setHistLen(historyRef.current.length);
+        setRedoLen(redoRef.current.length);
+        setElements(next);
         setSelectedIds(new Set());
         setEditingId(null);
       }, []);
@@ -312,7 +341,8 @@
           if (editingId) return;
           if (['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
 
-          if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
+          if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); return; }
+          if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
           if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
             e.preventDefault();
             const nz = Math.min(zoomRef.current * 1.2, 8);
@@ -346,7 +376,7 @@
           window.removeEventListener('keydown', onKeyDown);
           window.removeEventListener('keyup', onKeyUp);
         };
-      }, [editingId, undo, pushHistory, resetPan]);
+      }, [editingId, undo, redo, pushHistory, resetPan]);
 
       /* ── Mouse down ── */
       const handleDown = useCallback((e) => {
@@ -481,11 +511,11 @@
         if (!d || d.type === 'pan') return;
 
         if (d.type === 'move' && d.moved) {
-          historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
+          pushHistorySnapshot(d.snapshot);
         }
 
         if (d.type === 'resize') {
-          if (d.moved) historyRef.current = [...historyRef.current.slice(-49), d.snapshot];
+          if (d.moved) pushHistorySnapshot(d.snapshot);
           dragRef.current = null;
           return;
         }
@@ -521,7 +551,7 @@
           }
         }
         dragRef.current = null;
-      }, [pushHistory]);
+      }, [pushHistory, pushHistorySnapshot]);
 
       /* ── Export JSON ── */
       const exportJSON = () => {
@@ -594,12 +624,13 @@
           const fs = el.fontSize || 14;
           return (
             <foreignObject
-              key={el.id} data-elid={el.id}
-              x={el.x} y={el.y} width={el.w || 240} height={Math.max(200, fs * 1.6 * Math.max(1, (el.text||'').split('\n').length) + 40)}
-              style={{ overflow: 'visible', cursor: tool === 'select' ? 'move' : 'default' }}
-              onDoubleClick={(e) => { e.stopPropagation(); if (tool === 'select') setEditingId(el.id); }}
+              key={el.id}
+              x={el.x} y={el.y}
+              width={el.w || 240}
+              height={editing ? Math.max(200, fs * 1.6 * Math.max(1, (el.text||'').split('\n').length) + 40) : Math.round(fs * 1.6 * Math.max(1, (el.text||'').split('\n').length) + 14)}
+              style={{ overflow: 'visible', pointerEvents: 'none' }}
             >
-              <div xmlns="http://www.w3.org/1999/xhtml" style={{ display: 'inline-block', minWidth: 80 }}>
+              <div xmlns="http://www.w3.org/1999/xhtml" style={{ display: 'inline-block', pointerEvents: 'none' }}>
                 {editing ? (
                   <textarea
                     ref={node => { if (node && !node.dataset.focused) { node.dataset.focused = '1'; setTimeout(() => node.focus(), 0); } }}
@@ -618,14 +649,18 @@
                       padding: '6px 10px', minWidth: 160, minHeight: 40,
                       resize: 'both', outline: 'none', width: '100%',
                       boxShadow: `0 0 12px ${el.color || '#64FFDA'}33`,
+                      pointerEvents: 'auto',
                     }}
                   />
                 ) : (
-                  <div style={{
-                    color: el.color || '#fff', fontFamily: 'monospace',
-                    fontSize: fs, lineHeight: 1.6, padding: '6px 10px',
-                    minWidth: 80, minHeight: 28, whiteSpace: 'pre-wrap', border,
-                    borderRadius: 6, cursor: tool === 'select' ? 'move' : 'default', userSelect: 'none',
+                  <div data-elid={el.id}
+                    onDoubleClick={(e) => { e.stopPropagation(); if (tool === 'select') setEditingId(el.id); }}
+                    style={{
+                      color: el.color || '#fff', fontFamily: 'monospace',
+                      fontSize: fs, lineHeight: 1.6, padding: '6px 10px',
+                      display: 'inline-block', whiteSpace: 'pre-wrap', border,
+                      borderRadius: 6, cursor: tool === 'select' ? 'move' : 'default', userSelect: 'none',
+                      pointerEvents: 'auto',
                   }}>
                     {el.text || <span style={{ opacity: 0.25, fontStyle: 'italic', fontSize: 12 }}>texto...</span>}
                   </div>
@@ -1080,16 +1115,32 @@
               {/* Undo */}
               <button
                 onClick={undo} title="Desfazer  [Ctrl+Z]"
-                disabled={historyRef.current.length === 0}
+                disabled={histLen === 0}
                 style={{
                   background: 'transparent', border: '1px solid #1E2D3D',
-                  borderRadius: 7, color: '#4A6A7A', cursor: 'pointer',
+                  borderRadius: 7, color: '#4A6A7A',
+                  cursor: histLen === 0 ? 'default' : 'pointer',
                   fontSize: 13, padding: '4px 10px', fontFamily: 'inherit',
-                  opacity: historyRef.current.length === 0 ? 0.35 : 1,
+                  opacity: histLen === 0 ? 0.35 : 1,
                 }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; }}
+                onMouseEnter={e => { if (histLen > 0) { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; } }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D';   e.currentTarget.style.color='#4A6A7A'; }}
               >↩</button>
+
+              {/* Redo */}
+              <button
+                onClick={redo} title="Refazer  [Ctrl+Y]"
+                disabled={redoLen === 0}
+                style={{
+                  background: 'transparent', border: '1px solid #1E2D3D',
+                  borderRadius: 7, color: '#4A6A7A',
+                  cursor: redoLen === 0 ? 'default' : 'pointer',
+                  fontSize: 13, padding: '4px 10px', fontFamily: 'inherit',
+                  opacity: redoLen === 0 ? 0.35 : 1,
+                }}
+                onMouseEnter={e => { if (redoLen > 0) { e.currentTarget.style.borderColor='#64FFDA44'; e.currentTarget.style.color='#64FFDA'; } }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E2D3D';   e.currentTarget.style.color='#4A6A7A'; }}
+              >↪</button>
 
               {hasSelection && (
                 <button
